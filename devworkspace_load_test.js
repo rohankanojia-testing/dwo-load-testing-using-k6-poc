@@ -19,14 +19,13 @@ export const options = {
       executor: 'ramping-vus',
       startVUs: 0,
       stages: [
-        { duration: '2m', target: 100 },   // Warm up - 100 workspaces
-        { duration: '5m', target: 500 },   // Ramp to 500 workspaces
-        { duration: '8m', target: 1000 },  // Ramp to 1000 workspaces
-        { duration: '5m', target: 1500 },  // Peak load - 1500 workspaces
-        { duration: '2m', target: 1500 }, // Sustain peak load
-        { duration: '1m', target: 1000 },  // Scale down to 1000
-        { duration: '1m', target: 500 },   // Scale down to 500
-        { duration: '1m', target: 0 },     // Complete shutdown
+        { duration: '1m', target: 10 },
+        { duration: '3m', target: 25 },
+        { duration: '5m', target: 50 },
+        { duration: '2m', target: 75 },
+        { duration: '2m', target: 100 },
+        { duration: '1m', target: 50 },
+        { duration: '1m', target: 0 },
       ],
       gracefulRampDown: '5m',
     },
@@ -34,7 +33,7 @@ export const options = {
       executor: 'per-vu-iterations',
       vus: 1,
       iterations: 1,
-      startTime: '25m',
+      startTime: '15m',
       exec: 'final_cleanup',
     },
   },
