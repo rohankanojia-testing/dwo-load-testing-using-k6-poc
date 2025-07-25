@@ -23,10 +23,10 @@ export const options = {
         { duration: '5m', target: 500 },   // Ramp to 500 workspaces
         { duration: '8m', target: 1000 },  // Ramp to 1000 workspaces
         { duration: '5m', target: 1500 },  // Peak load - 1500 workspaces
-        { duration: '5m', target: 1500 }, // Sustain peak load
-        { duration: '5m', target: 1000 },  // Scale down to 1000
-        { duration: '5m', target: 500 },   // Scale down to 500
-        { duration: '2m', target: 0 },     // Complete shutdown
+        { duration: '2m', target: 1500 }, // Sustain peak load
+        { duration: '1m', target: 1000 },  // Scale down to 1000
+        { duration: '1m', target: 500 },   // Scale down to 500
+        { duration: '1m', target: 0 },     // Complete shutdown
       ],
       gracefulRampDown: '5m',
     },
@@ -34,7 +34,7 @@ export const options = {
       executor: 'per-vu-iterations',
       vus: 1,
       iterations: 1,
-      startTime: '10m',
+      startTime: '25m',
       exec: 'final_cleanup',
     },
   },
@@ -76,6 +76,10 @@ function generateManifest(vuId, iteration, namespace) {
               image: "registry.redhat.io/ubi8/ubi-micro:latest",
               command: ["sleep", "3600"],
               imagePullPolicy: "IfNotPresent",
+              memoryLimit: "64Mi",
+              memoryRequest: "32Mi",
+              cpuLimit: "200m",
+              cpuRequest: "100m"
             },
           },
         ],

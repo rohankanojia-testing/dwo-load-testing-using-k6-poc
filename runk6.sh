@@ -11,7 +11,12 @@ DWO_METRICS_READER_ROLEBINDING_NAME="dwo-metrics-reader-binding"
 K6_SCRIPT="devworkspace_load_test.js"
 
 echo "🔧 Creating Namespace"
-oc new-project $NAMESPACE
+cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${NAMESPACE}
+EOF
 
 echo "🔧 Creating ServiceAccount and RBAC..."
 

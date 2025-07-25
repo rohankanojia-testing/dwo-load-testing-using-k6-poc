@@ -70,6 +70,10 @@ function generateManifest(vuId, iteration, namespace) {
               image: "registry.redhat.io/ubi8/ubi-micro:latest",
               command: ["sleep", "3600"],
               imagePullPolicy: "IfNotPresent",
+              memoryLimit: "64Mi",
+              memoryRequest: "32Mi",
+              cpuLimit: "200m",
+              cpuRequest: "100m"
             },
           },
         ],
