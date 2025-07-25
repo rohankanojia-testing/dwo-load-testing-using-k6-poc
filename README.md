@@ -26,6 +26,7 @@ In our case, I've created a script [runk6.sh](./runk6.sh) that runs load test. I
 sh runk6.sh
 ```
 
+In a separate terminal window, you can check DevWorkspaces getting created in `loadtest-devworkspaces` namespace
 ## Running load test as a Pod in Kubernetes Cluster
 For running load test as a Pod in Kubernetes Cluster, you would need to load the test script into a ConfigMap first:
 ```shell
@@ -65,3 +66,5 @@ In our case, I've created a script [runk6-in-cluster.sh](./runk6-in-cluster.sh) 
 ```shell
 sh runk6-in-cluster.sh
 ```
+
+In a separate terminal window, you can check DevWorkspaces getting created in `loadtest-devworkspaces` namespace

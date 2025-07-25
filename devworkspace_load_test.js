@@ -19,12 +19,12 @@ export const options = {
       executor: 'ramping-vus',
       startVUs: 0,
       stages: [
-        { duration: '1m', target: 10 },
-        { duration: '3m', target: 25 },
-        { duration: '5m', target: 50 },
-        { duration: '2m', target: 75 },
-        { duration: '2m', target: 100 },
-        { duration: '1m', target: 50 },
+        { duration: '1m', target: 5 },
+        { duration: '3m', target: 10 },
+        { duration: '5m', target: 25 },
+        { duration: '2m', target: 35 },
+        { duration: '2m', target: 50 },
+        { duration: '1m', target: 25 },
         { duration: '1m', target: 0 },
       ],
       gracefulRampDown: '5m',
@@ -72,7 +72,7 @@ function generateManifest(vuId, iteration, namespace) {
           {
             name: "dev",
             container: {
-              image: "registry.redhat.io/ubi8/ubi-micro:latest",
+              image: "busybox:latest",
               command: ["sleep", "3600"],
               imagePullPolicy: "IfNotPresent",
               memoryLimit: "64Mi",
