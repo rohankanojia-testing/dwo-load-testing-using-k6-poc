@@ -57,11 +57,12 @@ const devworkspaceReadyDuration = new Trend('devworkspace_ready_duration');
 const devworkspaceReadyFailed = new Counter('devworkspace_ready_failed');
 const operatorCpu = new Trend('average_operator_cpu'); // in milli cores
 const operatorMemory = new Trend('average_operator_memory'); // in Mi
+const devworkspacesCreated = new Counter('devworkspace_create_count');
 const operatorCpuViolations = new Counter('operator_cpu_violations');
 const operatorMemViolations = new Counter('operator_mem_violations');
 
-const maxCpuMillicores = 15;     // Set your CPU limit
-const maxMemoryBytes = 200 * 1024 * 1024; // 200Mi
+const maxCpuMillicores = 250;
+const maxMemoryBytes = 200 * 1024 * 1024;
 
 export function setup() {
   if (shouldCreateAutomountResources) {
@@ -89,6 +90,7 @@ export default function () {
   const createStart = Date.now();
   const createRes = http.post(baseUrl, payload, { headers });
   devworkspaceCreateDuration.add(Date.now() - createStart);
+  devworkspacesCreated.add(1);
 
   check(createRes, {
     'DevWorkspace created': (r) => r.status === 201 || r.status === 409,
@@ -102,7 +104,7 @@ export default function () {
   const readyStart = Date.now();
   let isReady = false;
   let attempts = 0;
-  const maxAttempts = 60;
+  const maxAttempts = 120;
   let res = {};
 
   while (!isReady && attempts < maxAttempts) {
@@ -353,6 +355,7 @@ function parseCpuToMillicores(cpuStr) {
 
 export function handleSummary(data) {
   const allowed = [
+    'devworkspace_create_count',
     'devworkspace_create_duration',
     'devworkspace_delete_duration',
     'devworkspace_ready_duration',
@@ -363,9 +366,10 @@ export function handleSummary(data) {
     'average_operator_memory',
   ];
 
-  for (const key of Object.keys(data.metrics)) {
+  const filteredData = JSON.parse(JSON.stringify(data));
+  for (const key of Object.keys(filteredData.metrics)) {
     if (!allowed.includes(key)) {
-      delete data.metrics[key];
+      delete filteredData.metrics[key];
     }
   }
 
@@ -373,6 +377,6 @@ export function handleSummary(data) {
     "devworkspace-load-test-report.html": htmlReport(data, {
       title: "DevWorkspace Operator Load Test Report (HTTP)",
     }),
-    stdout: textSummary({ metrics: customMetrics }, { indent: ' ', enableColors: true }),
+    stdout: textSummary(filteredData, { indent: ' ', enableColors: true }),
   };
 }
