@@ -5,6 +5,10 @@
 [k6](https://github.com/grafana/k6) is a modern load testing tool from Grafana. It can be run as a standalone CLI tool or 
 as a Kubernetes Operator.
 
+## Prerequisites
+- Access to a Kubernetes Cluster
+- DevWorkspace Operator should be installed on that cluster
+
 ## Installing K6
 You can install k6 binary via various package managers on Linux/MacOS systems (see [installtion guide](https://grafana.com/docs/k6/latest/set-up/install-k6/))
 

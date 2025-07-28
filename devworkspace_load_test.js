@@ -7,6 +7,7 @@ import { textSummary } from "https://jslib.k6.io/k6-summary/0.0.1/index.js";
 const apiServer = __ENV.KUBE_API;
 const token = __ENV.KUBE_TOKEN;
 const namespace = __ENV.NAMESPACE || 'default';
+const operatorNamespace = __ENV.DWO_NAMESPACE || 'openshift-operators';
 
 const headers = {
   Authorization: `Bearer ${token}`,
@@ -19,13 +20,13 @@ export const options = {
       executor: 'ramping-vus',
       startVUs: 0,
       stages: [
-        { duration: '1m', target: 5 },
-        { duration: '3m', target: 10 },
-        { duration: '5m', target: 25 },
-        { duration: '2m', target: 35 },
-        { duration: '2m', target: 50 },
-        { duration: '1m', target: 25 },
-        { duration: '1m', target: 0 },
+        { duration: '10s', target: 5 },
+        { duration: '30s', target: 10 },
+        { duration: '50s', target: 20 },
+        { duration: '120s', target: 25 },
+        { duration: '120s', target: 35 },
+        { duration: '60s', target: 25 },
+        { duration: '60s', target: 0 },
       ],
       gracefulRampDown: '5m',
     },
@@ -43,6 +44,8 @@ export const options = {
     'devworkspace_delete_duration': ['p(95)<10000'],
     'devworkspace_ready_duration': ['p(95)<60000'],
     'devworkspace_ready_failed': ['count<5'],
+    'operator_cpu_violations': ['count==0'],
+    'operator_mem_violations': ['count==0'],
   },
   insecureSkipTLSVerify: true,  // trust self-signed certs like in CRC
 };
@@ -51,6 +54,13 @@ const devworkspaceCreateDuration = new Trend('devworkspace_create_duration');
 const devworkspaceDeleteDuration = new Trend('devworkspace_delete_duration');
 const devworkspaceReadyDuration = new Trend('devworkspace_ready_duration');
 const devworkspaceReadyFailed = new Counter('devworkspace_ready_failed');
+const operatorCpu = new Trend('average_operator_cpu'); // in milli cores
+const operatorMemory = new Trend('average_operator_memory'); // in Mi
+const operatorCpuViolations = new Counter('operator_cpu_violations');
+const operatorMemViolations = new Counter('operator_mem_violations');
+
+const maxCpuMillicores = 15;     // Set your CPU limit
+const maxMemoryBytes = 200 * 1024 * 1024; // 200Mi
 
 function generateManifest(vuId, iteration, namespace) {
   const name = `dw-test-${vuId}-${iteration}`;
@@ -72,7 +82,7 @@ function generateManifest(vuId, iteration, namespace) {
           {
             name: "dev",
             container: {
-              image: "busybox:latest",
+              image: "registry.access.redhat.com/ubi9/ubi-micro:9.6-1752751762",
               command: ["sleep", "3600"],
               imagePullPolicy: "IfNotPresent",
               memoryLimit: "64Mi",
@@ -116,15 +126,15 @@ export default function () {
     return;
   }
 
-  // Wait until status.phase == "Ready"
   const readyStart = Date.now();
   let isReady = false;
   let isBeingDeleted = false;
   let attempts = 0;
   const maxAttempts = 60;
+  let res = {};
 
   while (!isReady && attempts < maxAttempts) {
-    const res = http.get(`${baseUrl}/${crName}`, { headers });
+    res = http.get(`${baseUrl}/${crName}`, { headers });
 
     if (res.status === 200) {
       try {
@@ -140,6 +150,7 @@ export default function () {
       }
     }
 
+    checkOperatorMetrics();
     sleep(5);
     attempts++;
   }
@@ -149,7 +160,8 @@ export default function () {
       devworkspaceReadyDuration.add(Date.now() - readyStart);
     } else {
       devworkspaceReadyFailed.add(1);
-      console.warn(`[VU ${vuId}] DevWorkspace ${crName} not ready after ${maxAttempts * 5}s`);
+      console.warn(`[VU ${vuId}] DevWorkspace ${crName} not ready after ${maxAttempts * 5}s : ${res.status}`);
+      console.warn(`[VU ${vuId}] DevWorkspace ${crName} not ready after ${maxAttempts * 5}s : ${res.body?.status?.phase}`);
     }
   }
 
@@ -188,6 +200,68 @@ export function final_cleanup() {
       console.warn(`[CLEANUP] Failed to delete ${name}: ${delRes.status}`);
     }
   }
+}
+
+function checkOperatorMetrics() {
+  const metricsUrl = `${apiServer}/apis/metrics.k8s.io/v1beta1/namespaces/${operatorNamespace}/pods`;
+  const res = http.get(metricsUrl, { headers });
+
+  check(res, {
+    'Fetched pod metrics successfully': (r) => r.status === 200,
+  });
+
+  if (res.status !== 200) {
+    console.warn(`[DWO METRICS] Unable to fetch DevWorkspace Operator metrics from Kubernetes, got ${res.status}`);
+    return;
+  }
+
+  const data = JSON.parse(res.body);
+  const operatorPods = data.items.filter(p => p.metadata.name.includes("devworkspace-controller"));
+
+  for (const pod of operatorPods) {
+    const container = pod.containers[0]; // assuming single container
+    const name = pod.metadata.name;
+
+    const cpu = parseCpuToMillicores(container.usage.cpu);
+    const memory = parseMemoryToBytes(container.usage.memory);
+
+    operatorCpu.add(cpu);
+    operatorMemory.add(memory / 1024 / 1024);
+
+    const cpuOk = cpu <= maxCpuMillicores;
+    const memOk = memory <= maxMemoryBytes;
+
+    if (!cpuOk) {
+      console.warn(`[DWO METRICS] : Operator CPU more than max limit : ${cpu}m`);
+      operatorCpuViolations.add(1);
+    }
+    if (!memOk) {
+      console.warn(`[DWO METRICS] : Operator Memory more than max limit : ${memory / 1024 / 1024}Mi`);
+      operatorMemViolations.add(1);
+    }
+
+    check(null, {
+      [`[${name}] CPU < ${maxCpuMillicores}m`]: () => cpuOk,
+      [`[${name}] Memory < ${Math.round(maxMemoryBytes / 1024 / 1024)}Mi`]: () => memOk,
+    });
+  }
+}
+
+function parseMemoryToBytes(memStr) {
+  if (memStr.endsWith("Ki")) return parseInt(memStr) * 1024;
+  if (memStr.endsWith("Mi")) return parseInt(memStr) * 1024 * 1024;
+  if (memStr.endsWith("Gi")) return parseInt(memStr) * 1024 * 1024 * 1024;
+  if (memStr.endsWith("n")) return parseInt(memStr) / 1e9;
+  if (memStr.endsWith("u")) return parseInt(memStr) / 1e6;
+  if (memStr.endsWith("m")) return parseInt(memStr) / 1e3;
+  return parseInt(memStr); // bytes
+}
+
+function parseCpuToMillicores(cpuStr) {
+  if (cpuStr.endsWith("n")) return Math.round(parseInt(cpuStr) / 1e6);
+  if (cpuStr.endsWith("u")) return Math.round(parseInt(cpuStr) / 1e3);
+  if (cpuStr.endsWith("m")) return parseInt(cpuStr);
+  return Math.round(parseFloat(cpuStr) * 1000);
 }
 
 export function handleSummary(data) {
