@@ -8,6 +8,9 @@ const apiServer = __ENV.KUBE_API;
 const token = __ENV.KUBE_TOKEN;
 const namespace = __ENV.NAMESPACE || 'default';
 const operatorNamespace = __ENV.DWO_NAMESPACE || 'openshift-operators';
+const shouldCreateAutomountResources = (__ENV.CREATE_AUTOMOUNT_RESOURCES || 'false') === 'true';
+const autoMountConfigMapName = 'dwo-load-test-automount-configmap';
+const autoMountSecretName = 'dwo-load-test-automount-secret';
 
 const headers = {
   Authorization: `Bearer ${token}`,
@@ -20,21 +23,19 @@ export const options = {
       executor: 'ramping-vus',
       startVUs: 0,
       stages: [
-        { duration: '10s', target: 5 },
-        { duration: '30s', target: 10 },
-        { duration: '50s', target: 20 },
-        { duration: '120s', target: 25 },
-        { duration: '120s', target: 35 },
-        { duration: '60s', target: 25 },
-        { duration: '60s', target: 0 },
+        { duration: '1m', target: 20 },
+        { duration: '3m', target: 40 },
+        { duration: '4m', target: 50 },
+        { duration: '4m', target: 30 },
+        { duration: '3m', target: 0 },
       ],
-      gracefulRampDown: '5m',
+      gracefulRampDown: '1m',
     },
     final_cleanup: {
       executor: 'per-vu-iterations',
       vus: 1,
       iterations: 1,
-      startTime: '15m',
+      startTime: '16m',
       exec: 'final_cleanup',
     },
   },
@@ -62,39 +63,11 @@ const operatorMemViolations = new Counter('operator_mem_violations');
 const maxCpuMillicores = 15;     // Set your CPU limit
 const maxMemoryBytes = 200 * 1024 * 1024; // 200Mi
 
-function generateManifest(vuId, iteration, namespace) {
-  const name = `dw-test-${vuId}-${iteration}`;
-
-  return {
-    apiVersion: "workspace.devfile.io/v1alpha2",
-    kind: "DevWorkspace",
-    metadata: {
-      name: name,
-      namespace: namespace,
-    },
-    spec: {
-      started: true,
-      template: {
-        attributes: {
-          "controller.devfile.io/storage-type": "ephemeral",
-        },
-        components: [
-          {
-            name: "dev",
-            container: {
-              image: "registry.access.redhat.com/ubi9/ubi-micro:9.6-1752751762",
-              command: ["sleep", "3600"],
-              imagePullPolicy: "IfNotPresent",
-              memoryLimit: "64Mi",
-              memoryRequest: "32Mi",
-              cpuLimit: "200m",
-              cpuRequest: "100m"
-            },
-          },
-        ],
-      },
-    },
-  };
+export function setup() {
+  if (shouldCreateAutomountResources) {
+    createAutomountConfigMap();
+    createAutomountSecret();
+  }
 }
 
 export default function () {
@@ -128,7 +101,6 @@ export default function () {
 
   const readyStart = Date.now();
   let isReady = false;
-  let isBeingDeleted = false;
   let attempts = 0;
   const maxAttempts = 60;
   let res = {};
@@ -140,8 +112,7 @@ export default function () {
       try {
         const body = JSON.parse(res.body);
         const phase = body?.status?.phase;
-        isBeingDeleted = !!body.metadata?.deletionTimestamp;
-        if (phase === 'Ready') {
+        if (phase === 'Ready' || phase === 'Running') {
           isReady = true;
           break;
         }
@@ -155,13 +126,13 @@ export default function () {
     attempts++;
   }
 
-  if (!isBeingDeleted) {
+  if (res.status === 200) {
     if (isReady) {
       devworkspaceReadyDuration.add(Date.now() - readyStart);
     } else {
       devworkspaceReadyFailed.add(1);
-      console.warn(`[VU ${vuId}] DevWorkspace ${crName} not ready after ${maxAttempts * 5}s : ${res.status}`);
-      console.warn(`[VU ${vuId}] DevWorkspace ${crName} not ready after ${maxAttempts * 5}s : ${res.body?.status?.phase}`);
+      const body = JSON.parse(res.body);
+      console.warn(`[VU ${vuId}] DevWorkspace ${crName} not ready after ${maxAttempts * 5}s : ${body?.status?.phase}`);
     }
   }
 
@@ -200,6 +171,11 @@ export function final_cleanup() {
       console.warn(`[CLEANUP] Failed to delete ${name}: ${delRes.status}`);
     }
   }
+
+  if (shouldCreateAutomountResources) {
+    deleteConfigMap();
+    deleteSecret();
+  }
 }
 
 function checkOperatorMetrics() {
@@ -232,11 +208,11 @@ function checkOperatorMetrics() {
     const memOk = memory <= maxMemoryBytes;
 
     if (!cpuOk) {
-      console.warn(`[DWO METRICS] : Operator CPU more than max limit : ${cpu}m`);
+      console.warn(`[DWO METRICS] : Operator CPU more than allowed max limit : ${cpu}m`);
       operatorCpuViolations.add(1);
     }
     if (!memOk) {
-      console.warn(`[DWO METRICS] : Operator Memory more than max limit : ${memory / 1024 / 1024}Mi`);
+      console.warn(`[DWO METRICS] : Operator Memory more than allowed max limit : ${memory / 1024 / 1024}Mi`);
       operatorMemViolations.add(1);
     }
 
@@ -245,6 +221,117 @@ function checkOperatorMetrics() {
       [`[${name}] Memory < ${Math.round(maxMemoryBytes / 1024 / 1024)}Mi`]: () => memOk,
     });
   }
+}
+
+function createAutomountConfigMap() {
+  const url = `${apiServer}/api/v1/namespaces/${namespace}/configmaps`;
+
+  const configMapManifest = {
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: {
+      name: autoMountConfigMapName,
+      namespace: namespace,
+      labels: {
+        'controller.devfile.io/mount-to-devworkspace': 'true',
+        'controller.devfile.io/watch-configmap': 'true',
+      },
+      annotations: {
+        'controller.devfile.io/mount-path': '/etc/config/dwo-load-test-configmap',
+        'controller.devfile.io/mount-access-mode': '0644',
+        'controller.devfile.io/mount-as': 'file',
+      },
+    },
+    data: {
+      'test.key': 'test-value',
+    },
+  };
+
+  const res = http.post(url, JSON.stringify(configMapManifest), { headers });
+
+  if (res.status !== 201 && res.status !== 409) {
+    throw new Error(`Failed to create automount ConfigMap: ${res.status} - ${res.body}`);
+  }
+  console.log("Created automount configMap : " + autoMountConfigMapName);
+}
+
+function createAutomountSecret() {
+  const manifest = {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    metadata: {
+      name: autoMountSecretName,
+      namespace: namespace,
+      labels: {
+        'controller.devfile.io/mount-to-devworkspace': 'true',
+        'controller.devfile.io/watch-secret': 'true',
+      },
+      annotations: {
+        'controller.devfile.io/mount-path': `/etc/secret/dwo-load-test-secret`,
+        'controller.devfile.io/mount-as': 'file',
+      },
+    },
+    type: 'Opaque',
+    data: {
+      'secret.key': __ENV.SECRET_VALUE_BASE64 || 'dGVzdA==', // base64-encoded 'test'
+    },
+  };
+
+  const res = http.post(`${apiServer}/api/v1/namespaces/${namespace}/secrets`, JSON.stringify(manifest), { headers });
+  if (res.status !== 201 && res.status !== 409) {
+    throw new Error(`Failed to create automount Secret: ${res.status} - ${res.body}`);
+  }
+}
+
+function deleteConfigMap() {
+  const url = `${apiServer}/api/v1/namespaces/${namespace}/configmaps/${autoMountConfigMapName}`;
+  const res = http.del(url, null, { headers });
+  if (res.status !== 200 && res.status !== 404) {
+    console.warn(`[CLEANUP] Failed to delete ConfigMap ${autoMountConfigMapName}: ${res.status}`);
+  }
+}
+
+function deleteSecret() {
+  const url = `${apiServer}/api/v1/namespaces/${namespace}/secrets/${autoMountConfigMapName}`;
+  const res = http.del(url, null, { headers });
+  if (res.status !== 200 && res.status !== 404) {
+    console.warn(`[CLEANUP] Failed to delete Secret ${autoMountSecretName}: ${res.status}`);
+  }
+}
+
+function generateManifest(vuId, iteration, namespace) {
+  const name = `dw-test-${vuId}-${iteration}`;
+
+  return {
+    apiVersion: "workspace.devfile.io/v1alpha2",
+    kind: "DevWorkspace",
+    metadata: {
+      name: name,
+      namespace: namespace,
+    },
+    spec: {
+      started: true,
+      template: {
+        attributes: {
+          "controller.devfile.io/storage-type": "ephemeral",
+        },
+        components: [
+          {
+            name: "dev",
+            container: {
+              image: "registry.access.redhat.com/ubi9/ubi-micro:9.6-1752751762",
+              command: ["sleep", "3600"],
+              imagePullPolicy: "IfNotPresent",
+              memoryLimit: "64Mi",
+              memoryRequest: "32Mi",
+              cpuLimit: "200m",
+              cpuRequest: "100m"
+            },
+          },
+        ],
+      },
+    },
+  };
 }
 
 function parseMemoryToBytes(memStr) {
@@ -265,11 +352,27 @@ function parseCpuToMillicores(cpuStr) {
 }
 
 export function handleSummary(data) {
+  const allowed = [
+    'devworkspace_create_duration',
+    'devworkspace_delete_duration',
+    'devworkspace_ready_duration',
+    'devworkspace_ready_failed',
+    'operator_cpu_violations',
+    'operator_mem_violations',
+    'average_operator_cpu',
+    'average_operator_memory',
+  ];
+
+  for (const key of Object.keys(data.metrics)) {
+    if (!allowed.includes(key)) {
+      delete data.metrics[key];
+    }
+  }
+
   return {
     "devworkspace-load-test-report.html": htmlReport(data, {
       title: "DevWorkspace Operator Load Test Report (HTTP)",
     }),
-    stdout: textSummary(data, { indent: " ", enableColors: true }),
+    stdout: textSummary({ metrics: customMetrics }, { indent: ' ', enableColors: true }),
   };
 }
-

@@ -72,3 +72,11 @@ sh runk6-in-cluster.sh
 ```
 
 In a separate terminal window, you can check DevWorkspaces getting created in `loadtest-devworkspaces` namespace
+
+## Running load tests with auto mounted ConfigMap and Secret
+
+In order to test DevWorkspace Operator to test its effect on memory usage by creating [automount configmaps and secrets](https://github.com/devfile/devworkspace-operator/blob/main/docs/additional-configuration.adoc#automatically-mounting-volumes-configmaps-and-secrets), use `CREATE_AUTOMOUNT_RESOURCES` environment variable while running 
+load test like this:
+```shell
+CREATE_AUTOMOUNT_RESOURCES="true" runk6.sh
+```
