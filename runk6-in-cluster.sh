@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # === Config ===
+DWO_NAMESPACE="openshift-operators"
 NAMESPACE="loadtest-devworkspaces"
 SA_NAME="k6-devworkspace-tester"
 CLUSTERROLE_NAME="k6-devworkspace-role"
@@ -29,6 +30,12 @@ rules:
   - apiGroups: ["workspace.devfile.io"]
     resources: ["devworkspaces"]
     verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -59,6 +66,8 @@ kubectl create configmap $CONFIGMAP_NAME \
   --namespace $NAMESPACE \
   --dry-run=client -o yaml | kubectl apply -f -
 
+kubectl delete testrun --all -n $NAMESPACE
+
 echo "🚀 Creating K6 custom resource ..."
 cat <<EOF | kubectl apply -f -
 apiVersion: k6.io/v1alpha1
@@ -74,6 +83,9 @@ spec:
       file: script.js
   runner:
     serviceAccountName: $SA_NAME
+    env:
+    - name: CREATE_AUTOMOUNT_RESOURCES
+      value: 'false'
 EOF
 
 echo "📦 K6 test launched. Watch pods with:"

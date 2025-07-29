@@ -210,11 +210,9 @@ function checkOperatorMetrics() {
     const memOk = memory <= maxMemoryBytes;
 
     if (!cpuOk) {
-      console.warn(`[DWO METRICS] : Operator CPU more than allowed max limit : ${cpu}m`);
       operatorCpuViolations.add(1);
     }
     if (!memOk) {
-      console.warn(`[DWO METRICS] : Operator Memory more than allowed max limit : ${memory / 1024 / 1024}Mi`);
       operatorMemViolations.add(1);
     }
 
