@@ -3,7 +3,7 @@
 set -euo pipefail
 
 NAMESPACE="loadtest-devworkspaces"
-DWO_NAMESPACE="devworkspace-controller"
+DWO_NAMESPACE="openshift-operators"
 SA_NAME="k6-devworkspace-tester"
 CLUSTERROLE_NAME="k6-devworkspace-role"
 ROLEBINDING_NAME="k6-devworkspace-binding"
