@@ -9,6 +9,12 @@ ROLEBINDING_NAME="k6-devworkspace-binding"
 SCRIPT_FILE="devworkspace_load_test_in_cluster.js"
 CONFIGMAP_NAME="k6-test-script"
 K6_CR_NAME="k6-test-run"
+K6_CR_LABEL="k6_cr=${K6_CR_NAME}"
+
+echo "Installing k6 operator"
+curl -L https://raw.githubusercontent.com/grafana/k6-operator/refs/tags/${K6_OPERATOR_VERSION}/bundle.yaml | kubectl apply -f -
+echo "Waiting Until k6 deployment is ready"
+kubectl rollout status deployment/k6-operator-controller-manager -n k6-operator-system --timeout=300s
 
 echo "🔧 Creating Namespace"
 oc new-project $NAMESPACE
@@ -51,15 +57,6 @@ subjects:
     namespace: ${NAMESPACE}
 EOF
 
-echo "🔐 Generating token..."
-KUBE_TOKEN=$(kubectl create token ${SA_NAME} -n ${NAMESPACE})
-
-echo "🌐 Getting Kubernetes API server URL..."
-KUBE_API=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
-
-echo "🚀 Running k6 load test..."
-KUBE_TOKEN="${KUBE_TOKEN}" KUBE_API="${KUBE_API}" k6 run "${K6_SCRIPT}"
-
 echo "🧩 Creating ConfigMap from $SCRIPT_FILE ..."
 kubectl create configmap $CONFIGMAP_NAME \
   --from-file=script.js=$SCRIPT_FILE \
@@ -88,6 +85,17 @@ spec:
       value: 'false'
 EOF
 
-echo "📦 K6 test launched. Watch pods with:"
-echo "    kubectl get pods -n $NAMESPACE -l k6_cr=$K6_CR_NAME"
-kubectl get pods -n $NAMESPACE -l k6_cr=$K6_CR_NAME
+# Wait for the pod to be created and become ready for completion check
+echo "⏳ Waiting for K6 test pod to appear..."
+kubectl wait --for=condition=Ready pod -l "${K6_CR_LABEL}" -n "${NAMESPACE}" --timeout=120s
+
+# Get the pod name
+K6_TEST_POD=$(kubectl get pod -l "${K6_CR_LABEL}" -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}')
+
+# Wait for the pod to complete
+echo "⏳ Waiting for K6 test pod $POD to complete..."
+kubectl wait --for=condition=complete pod/"$K6_TEST_POD" -n "$NAMESPACE" --timeout=1800s
+
+# Show logs
+echo "📜 Logs from completed K6 test pod: $K6_TEST_POD"
+kubectl logs "$K6_TEST_POD" -n "$NAMESPACE"

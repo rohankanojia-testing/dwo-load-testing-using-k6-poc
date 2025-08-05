@@ -76,7 +76,7 @@ echo "🌐 Getting Kubernetes API server URL..."
 KUBE_API=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
 
 echo "🚀 Running k6 load test..."
-KUBE_TOKEN="${KUBE_TOKEN}" KUBE_API="${KUBE_API}" DWO_NAMESPACE="${DWO_NAMESPACE}" CREATE_AUTOMOUNT_RESOURCES="true" k6 run "${K6_SCRIPT}"
+KUBE_TOKEN="${KUBE_TOKEN}" KUBE_API="${KUBE_API}" DWO_NAMESPACE="${DWO_NAMESPACE}" CREATE_AUTOMOUNT_RESOURCES="false" k6 run "${K6_SCRIPT}"
 
 # Start port-forward in background
 kubectl -n devworkspace-controller port-forward svc/devworkspace-controller-metrics 8443:8443 >/dev/null 2>&1 &
