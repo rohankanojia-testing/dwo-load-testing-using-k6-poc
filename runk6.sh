@@ -34,9 +34,9 @@ metadata:
 rules:
   - apiGroups: ["workspace.devfile.io"]
     resources: ["devworkspaces"]
-    verbs: ["create", "get", "list", "watch", "delete"]
+    verbs: ["create", "get", "list", "watch", "delete", "deletecollection"]
   - apiGroups: [""]
-    resources: ["configmaps", "secrets"]
+    resources: ["configmaps", "secrets", "namespaces"]
     verbs: ["create", "get", "list", "watch", "delete"]
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods"]
@@ -76,29 +76,29 @@ echo "🌐 Getting Kubernetes API server URL..."
 KUBE_API=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
 
 echo "🚀 Running k6 load test..."
-KUBE_TOKEN="${KUBE_TOKEN}" KUBE_API="${KUBE_API}" DWO_NAMESPACE="${DWO_NAMESPACE}" CREATE_AUTOMOUNT_RESOURCES="false" k6 run "${K6_SCRIPT}"
+KUBE_TOKEN="${KUBE_TOKEN}" KUBE_API="${KUBE_API}" DWO_NAMESPACE="${DWO_NAMESPACE}" CREATE_AUTOMOUNT_RESOURCES="false" SEPARATE_NAMESPACES="true" k6 run "${K6_SCRIPT}"
 
 # Start port-forward in background
-kubectl -n devworkspace-controller port-forward svc/devworkspace-controller-metrics 8443:8443 >/dev/null 2>&1 &
-PORT_FORWARD_PID=$!
-
-# Ensure the port-forward is cleaned up when the script exits
-trap "kill $PORT_FORWARD_PID" EXIT
-
-# Wait until port is available
-echo "Waiting for port-forward to be ready..."
-for i in {1..10}; do
-  if nc -z localhost 8443; then
-    echo "Port-forward is ready"
-    break
-  fi
-  sleep 1
-done
-
-# Now it's safe to call curl
-echo "Fetching metrics..."
-curl -k -H "Authorization: Bearer ${KUBE_TOKEN}" https://localhost:8443/metrics
-
-# Explicitly kill it (trap will also do this)
-kill $PORT_FORWARD_PID
-echo "Killed port-forward with PID: $PORT_FORWARD_PID"
+#kubectl -n devworkspace-controller port-forward svc/devworkspace-controller-metrics 8443:8443 >/dev/null 2>&1 &
+#PORT_FORWARD_PID=$!
+#
+## Ensure the port-forward is cleaned up when the script exits
+#trap "kill $PORT_FORWARD_PID" EXIT
+#
+## Wait until port is available
+#echo "Waiting for port-forward to be ready..."
+#for i in {1..10}; do
+#  if nc -z localhost 8443; then
+#    echo "Port-forward is ready"
+#    break
+#  fi
+#  sleep 1
+#done
+#
+## Now it's safe to call curl
+#echo "Fetching metrics..."
+#curl -k -H "Authorization: Bearer ${KUBE_TOKEN}" https://localhost:8443/metrics
+#
+## Explicitly kill it (trap will also do this)
+#kill $PORT_FORWARD_PID
+#echo "Killed port-forward with PID: $PORT_FORWARD_PID"

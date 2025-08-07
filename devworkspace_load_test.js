@@ -6,11 +6,14 @@ import {textSummary} from "https://jslib.k6.io/k6-summary/0.0.1/index.js";
 
 const apiServer = __ENV.KUBE_API;
 const token = __ENV.KUBE_TOKEN;
+const useSeparateNamespaces = __ENV.SEPARATE_NAMESPACES === "true";
 const namespace = __ENV.NAMESPACE || 'default';
 const operatorNamespace = __ENV.DWO_NAMESPACE || 'openshift-operators';
 const shouldCreateAutomountResources = (__ENV.CREATE_AUTOMOUNT_RESOURCES || 'false') === 'true';
 const autoMountConfigMapName = 'dwo-load-test-automount-configmap';
 const autoMountSecretName = 'dwo-load-test-automount-secret';
+const labelType = "test-type";
+const labelKey = "load-test";
 
 const headers = {
     Authorization: `Bearer ${token}`, 'Content-Type': 'application/json',
@@ -22,22 +25,20 @@ export const options = {
             executor: 'ramping-vus',
             startVUs: 0,
             stages: [
-                {duration: '2m', target: 1000},
-                {duration: '3m', target: 2000},
-                {duration: '4m', target: 3000},
-                {duration: '5m', target: 4000},
-                {duration: '5m', target: 5000},
-                {duration: '5m', target: 5000}, // hold at peak
-                {duration: '6m', target: 0},    // ramp down
+                { duration: '1m', target: 25 },
+                { duration: '4m', target: 50 },
+                { duration: '4m', target: 75 },
+                { duration: '5m', target: 100 },
+                { duration: '5m', target: 50 },
+                { duration: '3m', target: 0 },
             ],
             gracefulRampDown: '1m',
         },
-
         final_cleanup: {
             executor: 'per-vu-iterations',
             vus: 1,
             iterations: 1,
-            startTime: '30m',
+            startTime: '22m',
             exec: 'final_cleanup',
         },
     }, thresholds: {
@@ -67,8 +68,8 @@ const maxMemoryBytes = 200 * 1024 * 1024;
 
 export function setup() {
     if (shouldCreateAutomountResources) {
-        createAutomountConfigMap();
-        createAutomountSecret();
+        createNewAutomountConfigMap();
+        createNewAutomountSecret();
     }
 }
 
@@ -76,32 +77,81 @@ export default function () {
     const vuId = __VU;
     const iteration = __ITER;
     const crName = `dw-test-${vuId}-${iteration}`;
-    const namespace = __ENV.NAMESPACE || 'default';
-    const apiServer = __ENV.KUBE_API;
+    const namespace = useSeparateNamespaces
+        ? `load-test-ns-${__VU}-${__ITER}`
+        : __ENV.NAMESPACE || "default";
+
     if (!apiServer) {
         throw new Error('KUBE_API env var is required');
     }
+    try {
+        if (useSeparateNamespaces) {
+            createNewNamespace(namespace);
+        }
+        const devWorkspaceCreated = createNewDevWorkspace(namespace, vuId, iteration);
+        if (devWorkspaceCreated) {
+            waitUntilDevWorkspaceIsReady(vuId, crName, namespace);
+            deleteDevWorkspace(crName);
+        }
+    } catch (error) {
+        console.error(`Load test for ${vuId}-${iteration} failed:`, error.message);
+    }
+}
+
+export function final_cleanup() {
+    if (useSeparateNamespaces) {
+        deleteAllSeparateNamespaces();
+    } else {
+        deleteAllDevWorkspacesInCurrentNamespace();
+    }
+
+    if (shouldCreateAutomountResources) {
+        deleteConfigMap();
+        deleteSecret();
+    }
+}
+
+export function handleSummary(data) {
+    const allowed = ['devworkspace_create_count', 'devworkspace_create_duration', 'devworkspace_delete_duration', 'devworkspace_ready_duration', 'devworkspace_ready', 'devworkspace_ready_failed', 'operator_cpu_violations', 'operator_mem_violations', 'average_operator_cpu', 'average_operator_memory',];
+
+    const filteredData = JSON.parse(JSON.stringify(data));
+    for (const key of Object.keys(filteredData.metrics)) {
+        if (!allowed.includes(key)) {
+            delete filteredData.metrics[key];
+        }
+    }
+
+    return {
+        "devworkspace-load-test-report.html": htmlReport(data, {
+            title: "DevWorkspace Operator Load Test Report (HTTP)",
+        }), stdout: textSummary(filteredData, {indent: ' ', enableColors: true}),
+    };
+}
+
+function createNewDevWorkspace(namespace, vuId, iteration) {
     const baseUrl = `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${namespace}/devworkspaces`;
 
-    // Replace placeholders and create resource
     const manifest = generateManifest(vuId, iteration, namespace);
 
     const payload = JSON.stringify(manifest);
 
     const createStart = Date.now();
     const createRes = http.post(baseUrl, payload, {headers});
-    devworkspaceCreateDuration.add(Date.now() - createStart);
-    devworkspacesCreated.add(1);
-
     check(createRes, {
         'DevWorkspace created': (r) => r.status === 201 || r.status === 409,
     });
 
     if (createRes.status !== 201 && createRes.status !== 409) {
         console.error(`[VU ${vuId}] Failed to create DevWorkspace: ${createRes.status}, ${createRes.body}`);
-        return;
+        return false;
     }
+    devworkspaceCreateDuration.add(Date.now() - createStart);
+    devworkspacesCreated.add(1);
+    return true;
+}
 
+function waitUntilDevWorkspaceIsReady(vuId, crName, namespace) {
+    const dwUrl = `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${namespace}/devworkspaces/${crName}`;
     const readyStart = Date.now();
     let isReady = false;
     let attempts = 0;
@@ -109,7 +159,7 @@ export default function () {
     let res = {};
 
     while (!isReady && attempts < maxAttempts) {
-        res = http.get(`${baseUrl}/${crName}`, {headers});
+        res = http.get(`${dwUrl}`, {headers});
 
         if (res.status === 200) {
             try {
@@ -124,7 +174,7 @@ export default function () {
             }
         }
 
-        checkOperatorMetrics();
+        checkDevWorkspaceOperatorMetrics();
         sleep(5);
         attempts++;
     }
@@ -139,50 +189,20 @@ export default function () {
             console.warn(`[VU ${vuId}] DevWorkspace ${crName} not ready after ${maxAttempts * 5}s : ${body?.status?.phase}`);
         }
     }
+}
 
-    sleep(10);
-
-    // Delete the DevWorkspace
+function deleteDevWorkspace(crName, namespace) {
+    const dwUrl = `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${namespace}/devworkspaces/${crName}`;
     const deleteStart = Date.now();
-    const delRes = http.del(`${baseUrl}/${crName}`, null, {headers});
+    const delRes = http.del(`${dwUrl}`, null, {headers});
     devworkspaceDeleteDuration.add(Date.now() - deleteStart);
 
     check(delRes, {
         'DevWorkspace deleted or not found': (r) => r.status === 200 || r.status === 404,
     });
-
-    sleep(5);
 }
 
-export function final_cleanup() {
-    const baseUrl = `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${namespace}/devworkspaces`;
-    console.log(`[CLEANUP] Deleting all DevWorkspaces in ${namespace}`);
-
-    const res = http.get(baseUrl, {headers});
-
-    if (res.status !== 200) {
-        console.error(`[CLEANUP] Failed to list DevWorkspaces: ${res.status}`);
-        return;
-    }
-
-    const body = JSON.parse(res.body);
-    if (!body.items || !Array.isArray(body.items)) return;
-
-    for (const item of body.items) {
-        const name = item.metadata.name;
-        const delRes = http.del(`${baseUrl}/${name}`, null, {headers});
-        if (delRes.status !== 200 && delRes.status !== 404) {
-            console.warn(`[CLEANUP] Failed to delete ${name}: ${delRes.status}`);
-        }
-    }
-
-    if (shouldCreateAutomountResources) {
-        deleteConfigMap();
-        deleteSecret();
-    }
-}
-
-function checkOperatorMetrics() {
+function checkDevWorkspaceOperatorMetrics() {
     const metricsUrl = `${apiServer}/apis/metrics.k8s.io/v1beta1/namespaces/${operatorNamespace}/pods`;
     const res = http.get(metricsUrl, {headers});
 
@@ -225,7 +245,27 @@ function checkOperatorMetrics() {
     }
 }
 
-function createAutomountConfigMap() {
+function createNewNamespace(namespaceName) {
+    const url = `${apiServer}/api/v1/namespaces`;
+
+    const namespaceObj = {
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: {
+            name: namespaceName,
+            labels: {
+                [labelKey]: labelType
+            }
+        }
+    }
+    const res = http.post(url, JSON.stringify(namespaceObj), {headers});
+
+    if (res.status !== 201 && res.status !== 409) {
+        throw new Error(`Failed to create Namespace: ${res.status} - ${namespaceName}`);
+    }
+}
+
+function createNewAutomountConfigMap() {
     const url = `${apiServer}/api/v1/namespaces/${namespace}/configmaps`;
 
     const configMapManifest = {
@@ -250,7 +290,7 @@ function createAutomountConfigMap() {
     console.log("Created automount configMap : " + autoMountConfigMapName);
 }
 
-function createAutomountSecret() {
+function createNewAutomountSecret() {
     const manifest = {
         apiVersion: 'v1', kind: 'Secret', metadata: {
             name: autoMountSecretName, namespace: namespace, labels: {
@@ -286,12 +326,53 @@ function deleteSecret() {
     }
 }
 
+function deleteNamespace(name) {
+    const delRes = http.del(`${apiServer}/api/v1/namespaces/${name}`, null, {headers});
+    if (delRes.status !== 200 && delRes.status !== 404) {
+        console.warn(`[CLEANUP] Failed to delete Namespace ${name}: ${delRes.status}`);
+    }
+}
+
+function deleteAllSeparateNamespaces() {
+    const getNamespacesByLabel = `${apiServer}/api/v1/namespaces?labelSelector=${labelKey}%3D${labelType}`;
+    console.log(`[CLEANUP] Deleting all Namespaces containing label ${labelKey}=${labelType}`);
+
+    const res = http.get(getNamespacesByLabel, {headers});
+    if (res.status !== 200) {
+        console.error(`[CLEANUP] Failed to list DevWorkspaces: ${res.status}`);
+        return;
+    }
+
+    const body = JSON.parse(res.body);
+    if (!body.items || !Array.isArray(body.items)) return;
+
+    for (const item of body.items) {
+        deleteNamespace(item.metadata.name);
+    }
+}
+
+function deleteAllDevWorkspacesInCurrentNamespace() {
+    const deleteByLabelSelectorUrl = `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${namespace}/devworkspaces?labelSelector=${labelKey}%3D${labelType}`;
+    console.log(`[CLEANUP] Deleting all DevWorkspaces in ${namespace} containing label ${labelKey}=${labelType}`);
+
+    const res = http.del(deleteByLabelSelectorUrl, null, {headers});
+    console.error(res.body);
+    if (res.status !== 200) {
+        console.error(`[CLEANUP] Failed to delete DevWorkspaces: ${res.status}`);
+        return;
+    }
+}
+
 function generateManifest(vuId, iteration, namespace) {
     const name = `dw-test-${vuId}-${iteration}`;
 
     return {
         apiVersion: "workspace.devfile.io/v1alpha2", kind: "DevWorkspace", metadata: {
-            name: name, namespace: namespace,
+            name: name,
+            namespace: namespace,
+            labels: {
+                [labelKey]: labelType
+            }
         }, spec: {
             started: true, template: {
                 attributes: {
@@ -329,19 +410,3 @@ function parseCpuToMillicores(cpuStr) {
     return Math.round(parseFloat(cpuStr) * 1000);
 }
 
-export function handleSummary(data) {
-    const allowed = ['devworkspace_create_count', 'devworkspace_create_duration', 'devworkspace_delete_duration', 'devworkspace_ready_duration', 'devworkspace_ready', 'devworkspace_ready_failed', 'operator_cpu_violations', 'operator_mem_violations', 'average_operator_cpu', 'average_operator_memory',];
-
-    const filteredData = JSON.parse(JSON.stringify(data));
-    for (const key of Object.keys(filteredData.metrics)) {
-        if (!allowed.includes(key)) {
-            delete filteredData.metrics[key];
-        }
-    }
-
-    return {
-        "devworkspace-load-test-report.html": htmlReport(data, {
-            title: "DevWorkspace Operator Load Test Report (HTTP)",
-        }), stdout: textSummary(filteredData, {indent: ' ', enableColors: true}),
-    };
-}
