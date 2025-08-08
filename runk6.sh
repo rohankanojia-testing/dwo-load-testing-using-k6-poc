@@ -83,6 +83,7 @@ KUBE_TOKEN="${KUBE_TOKEN}" \
   CREATE_AUTOMOUNT_RESOURCES="false" \
   SEPARATE_NAMESPACES="true" \
   DEVWORKSPACE_LINK="${DEVWORKSPACE_LINK}" \
+  MAX_VUS="50" \
   k6 run "${K6_SCRIPT}"
 
 # Start port-forward in background

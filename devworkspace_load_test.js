@@ -11,6 +11,7 @@ const namespace = __ENV.NAMESPACE || 'default';
 const operatorNamespace = __ENV.DWO_NAMESPACE || 'openshift-operators';
 const externalDevWorkspaceLink = __ENV.DEVWORKSPACE_LINK || '';
 const shouldCreateAutomountResources = (__ENV.CREATE_AUTOMOUNT_RESOURCES || 'false') === 'true';
+const maxVUs = Number(__ENV.MAX_VUS || 50);
 const autoMountConfigMapName = 'dwo-load-test-automount-configmap';
 const autoMountSecretName = 'dwo-load-test-automount-secret';
 const labelType = "test-type";
@@ -25,14 +26,7 @@ export const options = {
         create_and_delete_devworkspaces: {
             executor: 'ramping-vus',
             startVUs: 0,
-            stages: [
-                { duration: '1m', target: 25 },
-                { duration: '4m', target: 50 },
-                { duration: '4m', target: 75 },
-                { duration: '5m', target: 100 },
-                { duration: '5m', target: 50 },
-                { duration: '3m', target: 0 },
-            ],
+            stages: generateLoadTestStages(maxVUs),
             gracefulRampDown: '1m',
         },
         final_cleanup: {
@@ -421,4 +415,15 @@ function generateOpinionatedManifest(vuId, iteration, namespace) {
         [labelKey]: labelType
     }
     return devWorkspace;
+}
+
+function generateLoadTestStages(max) {
+    return [
+        { duration: '1m', target: Math.floor(max * 0.25) },
+        { duration: '4m', target: Math.floor(max * 0.5) },
+        { duration: '4m', target: Math.floor(max * 0.75) },
+        { duration: '5m', target: max },
+        { duration: '5m', target: Math.floor(max * 0.5) },
+        { duration: '3m', target: 0 },
+    ];
 }
