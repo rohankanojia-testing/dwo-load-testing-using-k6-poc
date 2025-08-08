@@ -9,6 +9,7 @@ const token = __ENV.KUBE_TOKEN;
 const useSeparateNamespaces = __ENV.SEPARATE_NAMESPACES === "true";
 const namespace = __ENV.NAMESPACE || 'default';
 const operatorNamespace = __ENV.DWO_NAMESPACE || 'openshift-operators';
+const externalDevWorkspaceLink = __ENV.DEVWORKSPACE_LINK || '';
 const shouldCreateAutomountResources = (__ENV.CREATE_AUTOMOUNT_RESOURCES || 'false') === 'true';
 const autoMountConfigMapName = 'dwo-load-test-automount-configmap';
 const autoMountSecretName = 'dwo-load-test-automount-secret';
@@ -131,7 +132,7 @@ export function handleSummary(data) {
 function createNewDevWorkspace(namespace, vuId, iteration) {
     const baseUrl = `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${namespace}/devworkspaces`;
 
-    const manifest = generateManifest(vuId, iteration, namespace);
+    const manifest = generateOpinionatedManifest(vuId, iteration, namespace);
 
     const payload = JSON.stringify(manifest);
 
@@ -169,8 +170,8 @@ function waitUntilDevWorkspaceIsReady(vuId, crName, namespace) {
                     isReady = true;
                     break;
                 }
-            } catch (_) {
-                console.error(`GET [VU ${vuId}] Failed to parse DevWorkspace from API: ${res.body}`);
+            } catch (e) {
+                console.error(`GET [VU ${vuId}] Failed to parse DevWorkspace from API: ${res.body} : ${e.message}`);
             }
         }
 
@@ -310,14 +311,6 @@ function createNewAutomountSecret() {
     }
 }
 
-function deleteConfigMap() {
-    const url = `${apiServer}/api/v1/namespaces/${namespace}/configmaps/${autoMountConfigMapName}`;
-    const res = http.del(url, null, {headers});
-    if (res.status !== 200 && res.status !== 404) {
-        console.warn(`[CLEANUP] Failed to delete ConfigMap ${autoMountConfigMapName}: ${res.status}`);
-    }
-}
-
 function deleteSecret() {
     const url = `${apiServer}/api/v1/namespaces/${namespace}/secrets/${autoMountConfigMapName}`;
     const res = http.del(url, null, {headers});
@@ -359,13 +352,10 @@ function deleteAllDevWorkspacesInCurrentNamespace() {
     console.error(res.body);
     if (res.status !== 200) {
         console.error(`[CLEANUP] Failed to delete DevWorkspaces: ${res.status}`);
-        return;
     }
 }
 
-function generateManifest(vuId, iteration, namespace) {
-    const name = `dw-test-${vuId}-${iteration}`;
-
+function createOpinionatedDevWorkspace(name, namespace) {
     return {
         apiVersion: "workspace.devfile.io/v1alpha2", kind: "DevWorkspace", metadata: {
             name: name,
@@ -393,20 +383,42 @@ function generateManifest(vuId, iteration, namespace) {
     };
 }
 
-function parseMemoryToBytes(memStr) {
-    if (memStr.endsWith("Ki")) return parseInt(memStr) * 1024;
-    if (memStr.endsWith("Mi")) return parseInt(memStr) * 1024 * 1024;
-    if (memStr.endsWith("Gi")) return parseInt(memStr) * 1024 * 1024 * 1024;
-    if (memStr.endsWith("n")) return parseInt(memStr) / 1e9;
-    if (memStr.endsWith("u")) return parseInt(memStr) / 1e6;
-    if (memStr.endsWith("m")) return parseInt(memStr) / 1e3;
-    return parseInt(memStr); // bytes
+function parseJSONResponseToDevWorkspace(response) {
+    let devWorkspace;
+    try {
+        devWorkspace = response.json();
+    } catch (e) {
+        throw new Error(`[DW CREATE] Failed to parse JSON : ${response.body}: ${e.message}`);
+    }
+    return devWorkspace;
 }
 
-function parseCpuToMillicores(cpuStr) {
-    if (cpuStr.endsWith("n")) return Math.round(parseInt(cpuStr) / 1e6);
-    if (cpuStr.endsWith("u")) return Math.round(parseInt(cpuStr) / 1e3);
-    if (cpuStr.endsWith("m")) return parseInt(cpuStr);
-    return Math.round(parseFloat(cpuStr) * 1000);
+function downloadAndParseExternalWorkspace(externalDevWorkspaceLink) {
+    let manifest;
+    if (externalDevWorkspaceLink) {
+        const res = http.get(externalDevWorkspaceLink);
+
+        if (res.status !== 200) {
+            throw new Error(`[DW CREATE] Failed to fetch JSON content from ${externalDevWorkspaceLink}, got ${res.status}`);
+        }
+        manifest = parseJSONResponseToDevWorkspace(res);
+    }
+
+    return manifest;
 }
 
+function generateOpinionatedManifest(vuId, iteration, namespace) {
+    const name = `dw-test-${vuId}-${iteration}`;
+    let devWorkspace = {};
+    if (externalDevWorkspaceLink.length > 0) {
+        devWorkspace = downloadAndParseExternalWorkspace(externalDevWorkspaceLink);
+    } else {
+        devWorkspace = createOpinionatedDevWorkspace();
+    }
+    devWorkspace.metadata.name = name;
+    devWorkspace.metadata.namespace = namespace;
+    devWorkspace.metadata.labels = {
+        [labelKey]: labelType
+    }
+    return devWorkspace;
+}

@@ -251,7 +251,7 @@ function createAutomountConfigMap() {
 }
 
 function createAutomountSecret() {
-  const manifest = {
+  const secretObj = {
     apiVersion: 'v1',
     kind: 'Secret',
     metadata: {
@@ -272,7 +272,7 @@ function createAutomountSecret() {
     },
   };
 
-  const res = http.post(`${apiServer}/api/v1/namespaces/${namespace}/secrets`, JSON.stringify(manifest), { headers });
+  const res = http.post(`${apiServer}/api/v1/namespaces/${namespace}/secrets`, JSON.stringify(secretObj), { headers });
   if (res.status !== 201 && res.status !== 409) {
     throw new Error(`Failed to create automount Secret: ${res.status} - ${res.body}`);
   }

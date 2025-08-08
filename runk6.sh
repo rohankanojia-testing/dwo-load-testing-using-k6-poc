@@ -9,6 +9,7 @@ CLUSTERROLE_NAME="k6-devworkspace-role"
 ROLEBINDING_NAME="k6-devworkspace-binding"
 DWO_METRICS_READER_ROLEBINDING_NAME="dwo-metrics-reader-binding"
 K6_SCRIPT="devworkspace_load_test.js"
+DEVWORKSPACE_LINK="https://gist.githubusercontent.com/rohanKanojia/71fe35304009f036b6f6b8a8420fb67c/raw/c98c91c03cad77f759277104b860ce3ca52bf6c2/simple-ephemeral.json"
 
 echo "🔧 Creating Namespace"
 cat <<EOF | oc apply -f -
@@ -76,7 +77,13 @@ echo "🌐 Getting Kubernetes API server URL..."
 KUBE_API=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
 
 echo "🚀 Running k6 load test..."
-KUBE_TOKEN="${KUBE_TOKEN}" KUBE_API="${KUBE_API}" DWO_NAMESPACE="${DWO_NAMESPACE}" CREATE_AUTOMOUNT_RESOURCES="false" SEPARATE_NAMESPACES="true" k6 run "${K6_SCRIPT}"
+KUBE_TOKEN="${KUBE_TOKEN}" \
+  KUBE_API="${KUBE_API}" \
+  DWO_NAMESPACE="${DWO_NAMESPACE}" \
+  CREATE_AUTOMOUNT_RESOURCES="false" \
+  SEPARATE_NAMESPACES="true" \
+  DEVWORKSPACE_LINK="${DEVWORKSPACE_LINK}" \
+  k6 run "${K6_SCRIPT}"
 
 # Start port-forward in background
 #kubectl -n devworkspace-controller port-forward svc/devworkspace-controller-metrics 8443:8443 >/dev/null 2>&1 &
