@@ -12,6 +12,7 @@ const operatorNamespace = __ENV.DWO_NAMESPACE || 'openshift-operators';
 const externalDevWorkspaceLink = __ENV.DEVWORKSPACE_LINK || '';
 const shouldCreateAutomountResources = (__ENV.CREATE_AUTOMOUNT_RESOURCES || 'false') === 'true';
 const maxVUs = Number(__ENV.MAX_VUS || 50);
+const devWorkspaceReadyTimeout = Number(__ENV.DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS || 600);
 const autoMountConfigMapName = 'dwo-load-test-automount-configmap';
 const autoMountSecretName = 'dwo-load-test-automount-secret';
 const labelType = "test-type";
@@ -150,7 +151,8 @@ function waitUntilDevWorkspaceIsReady(vuId, crName, namespace) {
     const readyStart = Date.now();
     let isReady = false;
     let attempts = 0;
-    const maxAttempts = 120;
+    const pollWaitInterval = 5;
+    const maxAttempts = devWorkspaceReadyTimeout / pollWaitInterval;
     let res = {};
 
     while (!isReady && attempts < maxAttempts) {
@@ -170,7 +172,7 @@ function waitUntilDevWorkspaceIsReady(vuId, crName, namespace) {
         }
 
         checkDevWorkspaceOperatorMetrics();
-        sleep(5);
+        sleep(pollWaitInterval);
         attempts++;
     }
 
@@ -181,7 +183,7 @@ function waitUntilDevWorkspaceIsReady(vuId, crName, namespace) {
         } else {
             devworkspaceReadyFailed.add(1);
             const body = JSON.parse(res.body);
-            console.warn(`[VU ${vuId}] DevWorkspace ${crName} not ready after ${maxAttempts * 5}s : ${body?.status?.phase}`);
+            console.warn(`[VU ${vuId}] DevWorkspace ${crName} not ready after ${devWorkspaceReadyTimeout}s : ${body?.status?.phase}`);
         }
     }
 }
@@ -302,6 +304,14 @@ function createNewAutomountSecret() {
     const res = http.post(`${apiServer}/api/v1/namespaces/${namespace}/secrets`, JSON.stringify(manifest), {headers});
     if (res.status !== 201 && res.status !== 409) {
         throw new Error(`Failed to create automount Secret: ${res.status} - ${res.body}`);
+    }
+}
+
+function deleteConfigMap() {
+    const url = `${apiServer}/api/v1/namespaces/${namespace}/configmaps/${autoMountConfigMapName}`;
+    const res = http.del(url, null, { headers });
+    if (res.status !== 200 && res.status !== 404) {
+        console.warn(`[CLEANUP] Failed to delete ConfigMap ${autoMountConfigMapName}: ${res.status}`);
     }
 }
 
