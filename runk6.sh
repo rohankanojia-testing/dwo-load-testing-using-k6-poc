@@ -41,6 +41,7 @@ Options:
   --create-automount-resources <true|false>   Whether to create automount resources (default: false)
   --dwo-namespace <string>                    DevWorkspace Operator namespace (default: loadtest-devworkspaces)
   --logs-dir <string>                         Directory name where DevWorkspace and event logs would be dumped
+  --test-duration-minutes <int>               Duration in minutes for which to run load tests (default: 25 minutes)
   -h, --help                                  Show this help message
 EOF
 }
@@ -119,19 +120,6 @@ subjects:
   - kind: ServiceAccount
     name: ${SA_NAME}
     namespace: ${NAMESPACE}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: $DWO_METRICS_READER_ROLEBINDING_NAME
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: devworkspace-controller-metrics-reader
-subjects:
-  - kind: ServiceAccount
-    name: ${SA_NAME}
-    namespace: ${NAMESPACE}
 EOF
 }
 
@@ -166,7 +154,7 @@ run_k6_test() {
   echo "🚀 Running k6 load test..."
   KUBE_TOKEN="${KUBE_TOKEN}" \
   KUBE_API="${KUBE_API}" \
-  DWO_NAMESPACE="${DWO_NAMESPACE}" \
+  DWO_NAMESPACE="openshift-operators" \
   CREATE_AUTOMOUNT_RESOURCES="${CREATE_AUTOMOUNT_RESOURCES}" \
   SEPARATE_NAMESPACES="${SEPARATE_NAMESPACES}" \
   DEVWORKSPACE_LINK="${DEVWORKSPACE_LINK}" \
