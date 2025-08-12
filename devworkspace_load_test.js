@@ -17,6 +17,7 @@ const autoMountConfigMapName = 'dwo-load-test-automount-configmap';
 const autoMountSecretName = 'dwo-load-test-automount-secret';
 const labelType = "test-type";
 const labelKey = "load-test";
+const loadTestDurationInMinutes = __ENV.TEST_DURATION_IN_MINUTES || "25";
 
 const headers = {
     Authorization: `Bearer ${token}`, 'Content-Type': 'application/json',
@@ -34,7 +35,7 @@ export const options = {
             executor: 'per-vu-iterations',
             vus: 1,
             iterations: 1,
-            startTime: '22m',
+            startTime: `${loadTestDurationInMinutes}m`,
             exec: 'final_cleanup',
         },
     }, thresholds: {
@@ -354,7 +355,6 @@ function deleteAllDevWorkspacesInCurrentNamespace() {
     console.log(`[CLEANUP] Deleting all DevWorkspaces in ${namespace} containing label ${labelKey}=${labelType}`);
 
     const res = http.del(deleteByLabelSelectorUrl, null, {headers});
-    console.error(res.body);
     if (res.status !== 200) {
         console.error(`[CLEANUP] Failed to delete DevWorkspaces: ${res.status}`);
     }
@@ -429,14 +429,19 @@ function generateOpinionatedManifest(vuId, iteration, namespace) {
 }
 
 function generateLoadTestStages(max) {
-    return [
-        { duration: '1m', target: Math.floor(max * 0.25) },
-        { duration: '4m', target: Math.floor(max * 0.5) },
-        { duration: '4m', target: Math.floor(max * 0.75) },
-        { duration: '5m', target: max },
-        { duration: '5m', target: Math.floor(max * 0.5) },
-        { duration: '3m', target: 0 },
+    const stageDefinitions = [
+        { percent: 0.25, target: Math.floor(max * 0.25) },
+        { percent: 0.25, target: Math.floor(max * 0.5) },
+        { percent: 0.2, target: Math.floor(max * 0.75) },
+        { percent: 0.15, target: max },
+        { percent: 0.10, target: Math.floor(max * 0.5) },
+        { percent: 0.05, target: 0 },
     ];
+
+    return stageDefinitions.map(({ percent, target }) => ({
+        duration: `${Math.round(loadTestDurationInMinutes * percent)}m`,
+        target,
+    }));
 }
 
 function parseMemoryToBytes(memStr) {
