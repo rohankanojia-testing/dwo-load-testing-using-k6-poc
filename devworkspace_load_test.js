@@ -203,6 +203,7 @@ function checkDevWorkspaceOperatorMetrics() {
     const metricsUrl = `${apiServer}/apis/metrics.k8s.io/v1beta1/namespaces/${operatorNamespace}/pods`;
     const res = http.get(metricsUrl, {headers});
 
+
     check(res, {
         'Fetched pod metrics successfully': (r) => r.status === 200,
     });
@@ -436,4 +437,21 @@ function generateLoadTestStages(max) {
         { duration: '5m', target: Math.floor(max * 0.5) },
         { duration: '3m', target: 0 },
     ];
+}
+
+function parseMemoryToBytes(memStr) {
+    if (memStr.endsWith("Ki")) return parseInt(memStr) * 1024;
+    if (memStr.endsWith("Mi")) return parseInt(memStr) * 1024 * 1024;
+    if (memStr.endsWith("Gi")) return parseInt(memStr) * 1024 * 1024 * 1024;
+    if (memStr.endsWith("n")) return parseInt(memStr) / 1e9;
+    if (memStr.endsWith("u")) return parseInt(memStr) / 1e6;
+    if (memStr.endsWith("m")) return parseInt(memStr) / 1e3;
+    return parseInt(memStr); // bytes
+}
+
+function parseCpuToMillicores(cpuStr) {
+    if (cpuStr.endsWith("n")) return Math.round(parseInt(cpuStr) / 1e6);
+    if (cpuStr.endsWith("u")) return Math.round(parseInt(cpuStr) / 1e3);
+    if (cpuStr.endsWith("m")) return parseInt(cpuStr);
+    return Math.round(parseFloat(cpuStr) * 1000);
 }

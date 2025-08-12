@@ -10,6 +10,10 @@ ROLEBINDING_NAME="k6-devworkspace-binding"
 DWO_METRICS_READER_ROLEBINDING_NAME="dwo-metrics-reader-binding"
 K6_SCRIPT="devworkspace_load_test.js"
 DEVWORKSPACE_LINK="https://gist.githubusercontent.com/rohanKanojia/71fe35304009f036b6f6b8a8420fb67c/raw/c98c91c03cad77f759277104b860ce3ca52bf6c2/simple-ephemeral.json"
+MAX_VUS="100"
+DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS="1200"
+SEPARATE_NAMESPACES="true"
+CREATE_AUTOMOUNT_RESOURCES="false"
 
 echo "🔧 Creating Namespace"
 cat <<EOF | oc apply -f -
@@ -76,17 +80,26 @@ KUBE_TOKEN=$(kubectl create token ${SA_NAME} -n ${NAMESPACE})
 echo "🌐 Getting Kubernetes API server URL..."
 KUBE_API=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
 
+echo "Creating logs dir ..."
+mkdir -p logs
+kubectl get events --field-selector involvedObject.kind=Pod --watch --all-namespaces >> logs/"$(date +%Y-%m-%d)_events.log" 2>&1 &
+PID_EVENTS_WATCH=$!
+kubectl get dw --watch --all-namespaces >> logs/"$(date +%Y-%m-%d)_dw_watch.log"  2>&1 &
+PID_DW_WATCH=$!
+
 echo "🚀 Running k6 load test..."
 KUBE_TOKEN="${KUBE_TOKEN}" \
   KUBE_API="${KUBE_API}" \
   DWO_NAMESPACE="${DWO_NAMESPACE}" \
-  CREATE_AUTOMOUNT_RESOURCES="false" \
-  SEPARATE_NAMESPACES="true" \
+  CREATE_AUTOMOUNT_RESOURCES="${CREATE_AUTOMOUNT_RESOURCES}" \
+  SEPARATE_NAMESPACES="${SEPARATE_NAMESPACES}" \
   DEVWORKSPACE_LINK="${DEVWORKSPACE_LINK}" \
-  MAX_VUS="50" \
-  DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS="1200" \
+  MAX_VUS="${MAX_VUS}" \
+  DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS="${DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS}" \
   k6 run "${K6_SCRIPT}"
 
+echo "Stopping background watchers..."
+kill $PID_EVENTS_WATCH $PID_DW_WATCH 2>/dev/null || true
 # Start port-forward in background
 #kubectl -n devworkspace-controller port-forward svc/devworkspace-controller-metrics 8443:8443 >/dev/null 2>&1 &
 #PORT_FORWARD_PID=$!
