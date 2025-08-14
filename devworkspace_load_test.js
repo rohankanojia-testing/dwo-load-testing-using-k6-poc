@@ -99,7 +99,7 @@ export function final_cleanup() {
     if (useSeparateNamespaces) {
         deleteAllSeparateNamespaces();
     } else {
-        deleteNamespace(__ENV.NAMESPACE || "loadtest-devworkspaces");
+        deleteAllDevWorkspacesInCurrentNamespace();
     }
 
     if (shouldCreateAutomountResources) {
@@ -334,6 +334,16 @@ function deleteNamespace(name) {
     const delRes = http.del(`${apiServer}/api/v1/namespaces/${name}`, null, {headers});
     if (delRes.status !== 200 && delRes.status !== 404) {
         console.warn(`[CLEANUP] Failed to delete Namespace ${name}: ${delRes.status}`);
+    }
+}
+
+function deleteAllDevWorkspacesInCurrentNamespace() {
+    const deleteByLabelSelectorUrl = `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${namespace}/devworkspaces?labelSelector=${labelKey}%3D${labelType}`;
+    console.log(`[CLEANUP] Deleting all DevWorkspaces in ${namespace} containing label ${labelKey}=${labelType}`);
+
+    const res = http.del(deleteByLabelSelectorUrl, null, {headers});
+    if (res.status !== 200) {
+        console.error(`[CLEANUP] Failed to delete DevWorkspaces: ${res.status}`);
     }
 }
 

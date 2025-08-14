@@ -196,6 +196,7 @@ apiVersion: k6.io/v1alpha1
 kind: TestRun
 metadata:
   name: $K6_CR_NAME
+  namespace: $NAMESPACE
 spec:
   parallelism: 1
   script:
