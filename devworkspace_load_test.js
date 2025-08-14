@@ -4,10 +4,10 @@ import {Trend, Counter} from 'k6/metrics';
 import {htmlReport} from "https://raw.githubusercontent.com/benc-uk/k6-reporter/main/dist/bundle.js";
 import {textSummary} from "https://jslib.k6.io/k6-summary/0.0.1/index.js";
 
-const apiServer = __ENV.KUBE_API;
-const token = __ENV.KUBE_TOKEN;
+const inCluster = __ENV.IN_CLUSTER === 'true';
+const apiServer = inCluster ? `https://kubernetes.default.svc` : __ENV.KUBE_API;
+const token = inCluster ? open('/var/run/secrets/kubernetes.io/serviceaccount/token') : __ENV.KUBE_TOKEN;
 const useSeparateNamespaces = __ENV.SEPARATE_NAMESPACES === "true";
-const namespace = __ENV.NAMESPACE || 'default';
 const operatorNamespace = __ENV.DWO_NAMESPACE || 'openshift-operators';
 const externalDevWorkspaceLink = __ENV.DEVWORKSPACE_LINK || '';
 const shouldCreateAutomountResources = (__ENV.CREATE_AUTOMOUNT_RESOURCES || 'false') === 'true';
@@ -76,7 +76,7 @@ export default function () {
     const crName = `dw-test-${vuId}-${iteration}`;
     const namespace = useSeparateNamespaces
         ? `load-test-ns-${__VU}-${__ITER}`
-        : __ENV.NAMESPACE || "default";
+        : __ENV.NAMESPACE || "loadtest-devworkspaces";
 
     if (!apiServer) {
         throw new Error('KUBE_API env var is required');
@@ -99,7 +99,7 @@ export function final_cleanup() {
     if (useSeparateNamespaces) {
         deleteAllSeparateNamespaces();
     } else {
-        deleteAllDevWorkspacesInCurrentNamespace();
+        deleteNamespace(__ENV.NAMESPACE || "loadtest-devworkspaces");
     }
 
     if (shouldCreateAutomountResources) {
@@ -118,11 +118,16 @@ export function handleSummary(data) {
         }
     }
 
-    return {
-        "devworkspace-load-test-report.html": htmlReport(data, {
+    let loadTestSummaryReport = {
+        stdout: textSummary(filteredData, {indent: ' ', enableColors: true})
+    }
+    // Only generate HTML report when running outside the cluster
+    if (!inCluster) {
+        loadTestSummaryReport["devworkspace-load-test-report.html"] = htmlReport(data, {
             title: "DevWorkspace Operator Load Test Report (HTTP)",
-        }), stdout: textSummary(filteredData, {indent: ' ', enableColors: true}),
-    };
+        });
+    }
+    return loadTestSummaryReport;
 }
 
 function createNewDevWorkspace(namespace, vuId, iteration) {
@@ -347,16 +352,6 @@ function deleteAllSeparateNamespaces() {
 
     for (const item of body.items) {
         deleteNamespace(item.metadata.name);
-    }
-}
-
-function deleteAllDevWorkspacesInCurrentNamespace() {
-    const deleteByLabelSelectorUrl = `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${namespace}/devworkspaces?labelSelector=${labelKey}%3D${labelType}`;
-    console.log(`[CLEANUP] Deleting all DevWorkspaces in ${namespace} containing label ${labelKey}=${labelType}`);
-
-    const res = http.del(deleteByLabelSelectorUrl, null, {headers});
-    if (res.status !== 200) {
-        console.error(`[CLEANUP] Failed to delete DevWorkspaces: ${res.status}`);
     }
 }
 
