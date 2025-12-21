@@ -1,82 +1,119 @@
-# DevWorkspace Operator Load testing using k6
+# Load Testing for DevWorkspace Operator
 
-## What is K6?
-
-[k6](https://github.com/grafana/k6) is a modern load testing tool from Grafana. It can be run as a standalone CLI tool or 
-as a Kubernetes Operator.
+This directory contains load testing tools for the DevWorkspace Operator using k6. The tests create multiple DevWorkspaces concurrently to measure the operator's performance under load.
 
 ## Prerequisites
-- Access to a Kubernetes Cluster
-- DevWorkspace Operator should be installed on that cluster
 
-## Installing K6
-You can install k6 binary via various package managers on Linux/MacOS systems (see [installtion guide](https://grafana.com/docs/k6/latest/set-up/install-k6/))
+- `kubectl` (version >= 1.24.0)
+- `curl` (version >= 7.0.0)
+- `k6` (version >= 1.1.0) - Required when using `--mode binary`
+- Access to a Kubernetes cluster with DevWorkspace Operator installed
+- Proper RBAC permissions to create DevWorkspaces, ConfigMaps, Secrets, and Namespaces
 
-If you want to install k6 as an operator, read [Install K6 Operator](https://grafana.com/docs/k6/latest/set-up/set-up-distributed-k6/install-k6-operator/) guide here.
+## Running Load Tests
 
-## Running load test from outside Kubernetes Cluster
-For defining load test in k6, you need to define load test in a javascript file. In this project you can find this in
-- [devworkspace_load_test.js](./devworkspace_load_test.js)
+The load tests can be run using the `make test_load` target with various arguments. The tests support two modes:
+- **binary mode**: Runs k6 locally (default)
+- **operator mode**: Runs k6 using the k6-operator in the cluster
 
-Once you've defined test specifications in script you can run it with k6 binary:
-```shell
-k6 run devworkspace_load_test.js
+### Running with Eclipse Che
+
+When running with Eclipse Che, the script automatically provisions additional ConfigMaps for certificates that are required for Che workspaces to function properly.
+
+```bash
+make test_load ARGS=" \
+  --mode binary \
+  --run-with-eclipse-che true \
+  --max-vus ${MAX_VUS} \
+  --create-automount-resources true \
+  --max-devworkspaces ${MAX_DEVWORKSPACES} \
+  --devworkspace-ready-timeout-seconds 3600 \
+  --delete-devworkspace-after-ready false \
+  --separate-namespaces false \
+  --test-duration-minutes 40"
 ```
 
-In our case, I've created a script [runk6.sh](./runk6.sh) that runs load test. It does the following things:
-- Create ClusterRole, ClusterRoleBinding and ServiceAccount for load testing (we create DevWorkspace using Kubenretes REST API)
-- Define environment variables for Kubernetes APIServer, token, etc.
-```shell
-sh runk6.sh
+**Note**: When `--run-with-eclipse-che true` is set, the script will:
+- Provision a workspace namespace compatible with Eclipse Che
+- Create additional certificate ConfigMaps required by Che
+
+### Running without Eclipse Che
+
+When running without Eclipse Che, the standard namespace setup is used without additional certificate ConfigMaps.
+
+```bash
+make test_load ARGS=" \
+  --mode binary \
+  --max-vus ${MAX_VUS} \
+  --create-automount-resources true \
+  --max-devworkspaces ${MAX_DEVWORKSPACES} \
+  --devworkspace-ready-timeout-seconds 3600 \
+  --delete-devworkspace-after-ready false \
+  --separate-namespaces false \
+  --test-duration-minutes 40"
 ```
 
-In a separate terminal window, you can check DevWorkspaces getting created in `loadtest-devworkspaces` namespace
-## Running load test as a Pod in Kubernetes Cluster
-For running load test as a Pod in Kubernetes Cluster, you would need to load the test script into a ConfigMap first:
-```shell
-kubectl create configmap $CONFIGMAP_NAME \
-  --from-file=script.js=$SCRIPT_FILE \
-  --namespace $NAMESPACE \
-  --dry-run=client -o yaml | kubectl apply -f -
-```
-In order to start running test, we need to create `TestRun` CustomResource like this:
-```shell
-cat <<EOF | kubectl apply -f -
-apiVersion: k6.io/v1alpha1
-kind: TestRun
-metadata:
-  name: $K6_CR_NAME
-  namespace: $NAMESPACE
-spec:
-  parallelism: 1
-  script:
-    configMap:
-      name: $CONFIGMAP_NAME
-      file: script.js
-  runner:
-    serviceAccountName: $SA_NAME
-EOF
-```
+## Available Parameters
 
-You can inspect test logs like this:
-```shell
-kubectl get pods -n $NAMESPACE -l k6_cr=$K6_CR_NAME
-```
+| Parameter | Description | Default | Example |
+|-----------|-------------|---------|---------|
+| `--mode` | Execution mode: `binary` or `operator` | `binary` | `--mode binary` |
+| `--max-vus` | Maximum number of virtual users (concurrent DevWorkspace creations) | `100` | `--max-vus 50` |
+| `--max-devworkspaces` | Maximum number of DevWorkspaces to create (-1 for unlimited) | `-1` | `--max-devworkspaces 200` |
+| `--separate-namespaces` | Create each DevWorkspace in its own namespace | `false` | `--separate-namespaces true` |
+| `--delete-devworkspace-after-ready` | Delete DevWorkspace once it becomes Ready | `true` | `--delete-devworkspace-after-ready false` |
+| `--devworkspace-ready-timeout-seconds` | Timeout in seconds for workspace to become ready | `1200` | `--devworkspace-ready-timeout-seconds 3600` |
+| `--devworkspace-link` | URL to external DevWorkspace JSON to use instead of default | (empty) | `--devworkspace-link https://...` |
+| `--create-automount-resources` | Create automount ConfigMap and Secret for testing | `false` | `--create-automount-resources true` |
+| `--dwo-namespace` | DevWorkspace Operator namespace | `openshift-operators` | `--dwo-namespace devworkspace-controller` |
+| `--logs-dir` | Directory for DevWorkspace and event logs | `logs` | `--logs-dir /tmp/test-logs` |
+| `--test-duration-minutes` | Duration in minutes for the load test | `25` | `--test-duration-minutes 40` |
+| `--run-with-eclipse-che` | Enable Eclipse Che integration (adds certificate ConfigMaps) | `false` | `--run-with-eclipse-che true` |
+| `--che-cluster-name` | Eclipse Che cluster name (when using Che) | `eclipse-che` | `--che-cluster-name my-che` |
+| `--che-namespace` | Eclipse Che namespace (when using Che) | `eclipse-che` | `--che-namespace my-che-ns` |
 
-In our case, I've created a script [runk6-in-cluster.sh](./runk6-in-cluster.sh) that runs load test. It does the following things:
-- Create ClusterRole, ClusterRoleBinding and ServiceAccount for load testing (we create DevWorkspace using Kubernetes REST API)
-- Create TestRun CustomResource
-- Watch pod logs for test output
-```shell
-sh runk6-in-cluster.sh
-```
+## What the Tests Do
 
-In a separate terminal window, you can check DevWorkspaces getting created in `loadtest-devworkspaces` namespace
+1. **Setup**: Creates a test namespace, ServiceAccount, and RBAC resources
+2. **Eclipse Che Setup** (if enabled): Provisions Che-compatible namespace and certificate ConfigMaps
+3. **Load Generation**: Creates DevWorkspaces concurrently based on `--max-devworkspaces`
+4. **Monitoring**: 
+   - Watches DevWorkspace status until Ready
+   - Monitors operator CPU and memory usage
+   - Tracks etcd metrics
+   - Logs events and DevWorkspace state changes
+5. **Cleanup**: Removes all created resources and test namespace
 
-## Running load tests with auto mounted ConfigMap and Secret
+## Test Metrics
 
-In order to test DevWorkspace Operator to test its effect on memory usage by creating [automount configmaps and secrets](https://github.com/devfile/devworkspace-operator/blob/main/docs/additional-configuration.adoc#automatically-mounting-volumes-configmaps-and-secrets), use `CREATE_AUTOMOUNT_RESOURCES` environment variable while running 
-load test like this:
-```shell
-CREATE_AUTOMOUNT_RESOURCES="true" runk6.sh
-```
+The tests track the following metrics:
+- DevWorkspace creation duration
+- DevWorkspace ready duration
+- DevWorkspace deletion duration
+- Operator CPU and memory usage
+- etcd CPU and memory usage
+- Success/failure rates
+
+## Output
+
+- **Logs**: Stored in the `logs/` directory (or custom directory specified by `--logs-dir`)
+  - `{timestamp}_events.log`: Kubernetes events
+  - `{timestamp}_dw_watch.log`: DevWorkspace watch logs
+  - `dw_failure_report.csv`: Failed DevWorkspaces report
+- **HTML Report**: Generated when running in binary mode (outside cluster)
+- **Console Output**: Real-time test progress and summary
+
+## Troubleshooting
+
+- **Permission errors**: Ensure your kubeconfig has sufficient RBAC permissions
+- **Timeout errors**: Increase `--devworkspace-ready-timeout-seconds` for slower clusters
+- **Resource exhaustion**: Reduce `--max-vus` or `--max-devworkspaces` if cluster resources are limited
+- **k6 not found**: Install k6 from https://k6.io/docs/getting-started/installation/
+
+## Additional Notes
+
+- The tests use an opinionated minimal DevWorkspace by default, or you can provide a custom one via `--devworkspace-link`
+- When `--separate-namespaces true` is used, each DevWorkspace gets its own namespace
+- The `--delete-devworkspace-after-ready false` option is useful for testing sustained load scenarios
+- Certificate ConfigMaps are only created when `--run-with-eclipse-che true` is set
+
