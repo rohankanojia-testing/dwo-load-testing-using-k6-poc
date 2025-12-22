@@ -15,6 +15,9 @@ This directory contains load testing tools for the DevWorkspace Operator using k
 - Metrics server enabled in the cluster (required for webhook server load tests)
 
 ## DevWorkspace Controller Load Tests
+The **DevWorkspace Controller Load Tests** evaluate the performance of the DevWorkspace Controller by simulating multiple concurrent DevWorkspace creations. This helps ensure that the controller can handle load effectively and maintain performance under stress.
+
+![DevWorkspace Controller Load Test Flow](./images/dwo-controller-load-test-flow.png)
 
 The controller load tests can be run using the `make test_load` target with various arguments. The tests support two modes:
 - **binary mode**: Runs k6 locally (default)
@@ -110,6 +113,8 @@ The controller tests track the following metrics:
 ## Webhook Server Load Tests
 
 The webhook server load tests validate the admission webhook's functionality, including identity immutability enforcement and exec permission validation. These tests create multiple DevWorkspaces with different users and verify that:
+
+![DevWorkspace Webhook Server Load Test Flow](./images/dwo-webhook-server-load-test-flow.png)
 
 - DevWorkspace identity labels cannot be modified after creation
 - Pod identity labels cannot be modified
