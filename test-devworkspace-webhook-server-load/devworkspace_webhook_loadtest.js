@@ -4,6 +4,7 @@ import exec from 'k6/execution';
 import {SharedArray} from 'k6/data';
 import {Counter, Rate, Trend} from 'k6/metrics';
 import {textSummary} from "https://jslib.k6.io/k6-summary/0.0.1/index.js";
+import { parseCpuToMillicores, parseMemoryToBytes, generateDevWorkspaceToCreate } from '../common/utils.js';
 
 export const execAllowed = new Counter('exec_allowed_total');
 export const execDenied = new Counter('exec_denied_total');
@@ -53,7 +54,7 @@ export default function () {
     };
 
     // -------- PHASE 1: Create DevWorkspace --------
-    const dwName = createDevWorkspace(user, headers);
+    const dwName = createDevWorkspace(__VU, __ITER, user, TEST_NAMESPACE, headers);
     if (!dwName) return;
 
     // -------- PHASE 2: Wait until all DevWorkspaces are ready --------
@@ -110,33 +111,8 @@ export function handleSummary(data) {
 }
 
 // ---------------- Generic helpers ----------------
-function createDevWorkspace(user, headers) {
-    const dwPayload = {
-        apiVersion: 'workspace.devfile.io/v1alpha2',
-        kind: 'DevWorkspace',
-        metadata: {
-            generateName: `dw-${user.user}-`,
-            namespace: TEST_NAMESPACE,
-            annotations: { 'controller.devfile.io/restricted-access': 'true' },
-            labels: { 'console.openshift.io/terminal': 'true' },
-        },
-        spec: {
-            started: true,
-            routingClass: 'web-terminal',
-            template: {
-                components: [
-                    {
-                        name: 'restricted-access-container',
-                        container: {
-                            image: 'quay.io/wto/web-terminal-tooling:latest',
-                            mountSources: false,
-                            args: ['tail', '-f', '/dev/null'],
-                        },
-                    },
-                ],
-            },
-        },
-    };
+function createDevWorkspace(vuId, iteration, user, namespace, headers) {
+    const dwPayload = generateDevWorkspaceToCreate(vuId, iteration, namespace);
 
     const startTime = Date.now();
     const res = http.post(
@@ -383,20 +359,3 @@ function collectWebhookPodMetrics(headers) {
       webhookMemoryMB.add(memory / 1024 / 1024);
     }
 }
-
-function parseMemoryToBytes(memStr) {
-    if (memStr.endsWith("Ki")) return parseInt(memStr) * 1024;
-    if (memStr.endsWith("Mi")) return parseInt(memStr) * 1024 * 1024;
-    if (memStr.endsWith("Gi")) return parseInt(memStr) * 1024 * 1024 * 1024;
-    if (memStr.endsWith("n")) return parseInt(memStr) / 1e9;
-    if (memStr.endsWith("u")) return parseInt(memStr) / 1e6;
-    if (memStr.endsWith("m")) return parseInt(memStr) / 1e3;
-    return parseInt(memStr); // bytes
-  }
-  
-  function parseCpuToMillicores(cpuStr) {
-    if (cpuStr.endsWith("n")) return Math.round(parseInt(cpuStr) / 1e6);
-    if (cpuStr.endsWith("u")) return Math.round(parseInt(cpuStr) / 1e3);
-    if (cpuStr.endsWith("m")) return parseInt(cpuStr);
-    return Math.round(parseFloat(cpuStr) * 1000);
-  }

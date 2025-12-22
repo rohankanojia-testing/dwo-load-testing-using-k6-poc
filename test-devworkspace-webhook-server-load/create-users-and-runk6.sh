@@ -1,30 +1,110 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ---- config ----
+# ----------------
+# Defaults (env → CLI override)
+# ----------------
+KUBECTL="${KUBECTL:-}"
+
 N_USERS="${N_USERS:-10}"
-NS="${NS:-dw-webhook-loadtest}"
+LOAD_TEST_NAMESPACE="${LOAD_TEST_NAMESPACE:-dw-webhook-loadtest}"
+WEBHOOK_NAMESPACE="${WEBHOOK_NAMESPACE:-openshift-operators}"
+DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS="${DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS:-600}"
+DEVWORKSPACE_LINK="https://gist.githubusercontent.com/rohanKanojia/a68f7079c6045ea245a2e512dcc2b062/raw/cb2f0d7dce0badd9c8673d39b1b88de2965c3246/dw-restricted-access-annotation.json"
+
 DW_API_GROUP="workspace.devfile.io"
 DW_RESOURCE="devworkspaces"
 CLUSTER_ROLE_NAME="k6-devworkspace-webhook-server-role"
 TOKEN_TTL="15m"
-K6_SCRIPT="${K6_SCRIPT:-test-devworkspace-webhook-server-load/loadtest.js}"
-DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS="600"
+TOKENS_JSON=""
+K6_SCRIPT="${K6_SCRIPT:-test-devworkspace-webhook-server-load/devworkspace_webhook_loadtest.js}"
+
 # ----------------
+# Helpers
+# ----------------
+log() {
+  echo "$@" >&2
+}
 
-echo "🌐 Getting Kubernetes API server URL..."
-KUBE_API=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
-echo "Kubernetes API server: ${KUBE_API}"
+# Auto-detect CLI if KUBECTL is not explicitly set
+detect_cli() {
+  if [[ -z "$KUBECTL" ]]; then
+    if command -v oc &> /dev/null; then
+      KUBECTL="oc"
+    elif command -v kubectl &> /dev/null; then
+      KUBECTL="kubectl"
+    else
+      log "❌ Error: Neither 'oc' nor 'kubectl' found in PATH."
+      exit 1
+    fi
+  fi
+  log "🛠️  Using CLI: $KUBECTL"
+}
 
-echo "Creating namespace: ${NS}"
-kubectl create namespace "${NS}" --dry-run=client -o yaml | kubectl apply -f -
+print_help() {
+  cat <<EOF
+Usage: [KUBECTL=oc|kubectl] $0 [options]
 
-echo "Creating RBAC..."
-cat <<EOF | kubectl apply -f -
+Options:
+  --number-of-users <int>                         Number of service accounts / users (default: ${N_USERS})
+  --load-test-namespace <string>                  Namespace used for load testing (default: ${LOAD_TEST_NAMESPACE})
+  --webhook-server-namespace <string>             Namespace where webhook server runs (default: ${WEBHOOK_NAMESPACE})
+  --dev-workspace-ready-timeout-in-seconds <int>  Timeout for DevWorkspace readiness (default: ${DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS})
+  -h, --help                                      Show this help message
+
+Environment Variables:
+  KUBECTL       The CLI tool to use (oc or kubectl). Auto-detected if not set.
+EOF
+}
+
+parse_arguments() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --number-of-users)
+        N_USERS="$2"; shift 2;;
+      --load-test-namespace)
+        LOAD_TEST_NAMESPACE="$2"; shift 2;;
+      --webhook-server-namespace)
+        WEBHOOK_NAMESPACE="$2"; shift 2;;
+      --dev-workspace-ready-timeout-in-seconds)
+        DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS="$2"; shift 2;;
+      --devworkspace-link)
+        DEVWORKSPACE_LINK="$2";shift 2;;
+      -h|--help)
+        print_help; exit 0;;
+      *)
+        log "❌ Unknown option: $1"
+        print_help; exit 1;;
+    esac
+  done
+}
+
+cleanup() {
+  log "🧹 Cleaning up namespace ${LOAD_TEST_NAMESPACE}"
+  $KUBECTL delete ns "${LOAD_TEST_NAMESPACE}" --ignore-not-found
+}
+
+# ----------------
+# Kubernetes setup
+# ----------------
+create_namespace() {
+  log "📦 Creating namespace ${LOAD_TEST_NAMESPACE}"
+  $KUBECTL create namespace "${LOAD_TEST_NAMESPACE}" --dry-run=client -o yaml | $KUBECTL apply -f -
+
+  # Delete all ClusterRoleBindings and ClusterRoles with the label
+  $KUBECTL delete clusterrolebinding -l app=k6-loadtest --ignore-not-found
+  $KUBECTL delete clusterrole -l app=devworkspace-webhook-server-loadtest --ignore-not-found
+}
+
+create_rbac() {
+  log "🔐 Creating RBAC ClusterRole ${CLUSTER_ROLE_NAME}"
+  cat <<EOF | $KUBECTL apply -f -
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: ${CLUSTER_ROLE_NAME}
+  labels:
+    app: devworkspace-webhook-server-loadtest
 rules:
 - apiGroups: ["${DW_API_GROUP}"]
   resources: ["${DW_RESOURCE}"]
@@ -36,56 +116,72 @@ rules:
   resources: ["pods"]
   verbs: ["get", "list"]
 EOF
+}
 
-# Build JSON array in memory
-TOKENS_JSON="["
-for i in $(seq 1 "${N_USERS}"); do
-  SA="user-${i}"
+# ----------------
+# Token generation (NO stdout output)
+# ----------------
+generate_tokens_json() {
+  log "👥 Creating ${N_USERS} service accounts and tokens"
 
-  # Create service account
-  kubectl create serviceaccount "${SA}" -n "${NS}" --dry-run=client -o yaml | kubectl apply -f -
+  TOKENS_JSON="["
+  for i in $(seq 1 "${N_USERS}"); do
+    local sa="user-${i}"
 
-  # Bind clusterrole
-  kubectl create clusterrolebinding "${SA}-rb" \
-    --clusterrole=dw-user \
-    --serviceaccount="${NS}:${SA}" \
-    -n "${NS}" \
-    --dry-run=client -o yaml | kubectl apply -f -
+    $KUBECTL create serviceaccount "${sa}" -n "${LOAD_TEST_NAMESPACE}" \
+      --dry-run=client -o yaml | $KUBECTL apply -f -
 
-  # Get token
-  TOKEN=$(kubectl create token "${SA}" -n "${NS}" --duration="${TOKEN_TTL}")
+    $KUBECTL delete clusterrolebinding "${sa}-rb" --ignore-not-found
 
-  # Append JSON object
-  TOKENS_JSON+=$(cat <<EOF
-{"user":"${SA}","namespace":"${NS}","token":"${TOKEN}"}
-EOF
-)
+    $KUBECTL create clusterrolebinding "${sa}-rb" \
+      --clusterrole="${CLUSTER_ROLE_NAME}" \
+      --serviceaccount="${LOAD_TEST_NAMESPACE}:${sa}"
 
-  # Add comma if not last
-  if [ "$i" -lt "$N_USERS" ]; then
-    TOKENS_JSON+=","
-  fi
-done
-TOKENS_JSON+="]"
+    $KUBECTL label clusterrolebinding "${sa}-rb" app=devworkspace-webhook-server-loadtest --overwrite
 
-echo "Done."
-echo "Created ${N_USERS} service accounts"
-echo "Tokens JSON built in memory"
+    local token
+    token=$($KUBECTL create token "${sa}" -n "${LOAD_TEST_NAMESPACE}" --duration="${TOKEN_TTL}")
 
-# ---- invoke k6 with environment variables ----
-export K6_USERS_JSON="${TOKENS_JSON}"
+    TOKENS_JSON+="{\"user\":\"${sa}\",\"namespace\":\"${LOAD_TEST_NAMESPACE}\",\"token\":\"${token}\"}"
 
-echo "🚀 Running k6 load test..."
-N_USERS="${N_USERS}" \
-K6_USERS_JSON="${K6_USERS_JSON}" \
-KUBE_API="${KUBE_API}" \
-LOAD_TEST_NAMESPACE="${NS}" \
-DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS="${DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS}" \
-k6 run "${K6_SCRIPT}"
+    [[ "$i" -lt "$N_USERS" ]] && TOKENS_JSON+=","
+  done
+  TOKENS_JSON+="]"
+}
 
-exit_code=$?
-if [ $exit_code -ne 0 ]; then
-    echo "⚠️ k6 load test failed with exit code $exit_code. Proceeding to cleanup."
-fi
+# ----------------
+# k6 execution
+# ----------------
+run_k6_load_test() {
+  log "🚀 Running k6 load test"
 
-oc delete ns $NS
+  export N_USERS
+  export K6_USERS_JSON="${TOKENS_JSON}"
+  export KUBE_API
+  export LOAD_TEST_NAMESPACE
+  export WEBHOOK_NAMESPACE
+  export DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS
+  export DEVWORKSPACE_LINK
+
+  k6 run "${K6_SCRIPT}"
+}
+
+# ----------------
+# Main
+# ----------------
+main() {
+  parse_arguments "$@"
+  detect_cli
+
+  trap cleanup EXIT
+
+  KUBE_API=$($KUBECTL config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+
+  create_namespace
+  create_rbac
+  generate_tokens_json
+
+  run_k6_load_test
+}
+
+main "$@"
