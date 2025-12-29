@@ -132,10 +132,7 @@ make test_webhook_load
 You can customize the test by setting environment variables:
 
 ```bash
-N_USERS=50 \
-LOAD_TEST_NAMESPACE=dw-webhook-loadtest \
-WEBHOOK_NAMESPACE=openshift-operators \
-make test_webhook_load
+make test_webhook_load ARGS="--number-of-users 50 --load-test-namespace dw-webhok-loadtest --webhook-server-namespace openshift-operators"
 ```
 
 ### Webhook Server Test Parameters

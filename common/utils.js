@@ -52,6 +52,32 @@ export function downloadAndParseExternalWorkspace(externalDevWorkspaceLink) {
     return manifest;
 }
 
+export function getDevWorkspacesFromApiServer(apiServer, loadTestNamespace, headers, useSeparateNamespaces) {
+    const basePath = useSeparateNamespaces
+        ? `${apiServer}/apis/workspace.devfile.io/v1alpha2/devworkspaces`
+        : `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${loadTestNamespace}/devworkspaces`;
+
+    const url = `${basePath}?labelSelector=${labelKey}%3D${labelType}`;
+    const res = http.get(url, { headers });
+
+    if (res.status !== 200) {
+        const errorMsg = `Failed to fetch DevWorkspaces: ${res.status} ${res.statusText || ''}`;
+        console.error(errorMsg);
+
+        return {
+            error: errorMsg,
+            devWorkspaces: null,
+        };
+    }
+
+    const body = JSON.parse(res.body);
+
+    return {
+        error: null,
+        devWorkspaces: body.items,
+    };
+}
+
 function parseJSONResponseToDevWorkspace(response) {
     let devWorkspace;
     try {

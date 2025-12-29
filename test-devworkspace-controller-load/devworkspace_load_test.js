@@ -19,7 +19,7 @@ import {Trend, Counter} from 'k6/metrics';
 import { test } from 'k6/execution';
 import {htmlReport} from "https://raw.githubusercontent.com/benc-uk/k6-reporter/main/dist/bundle.js";
 import {textSummary} from "https://jslib.k6.io/k6-summary/0.0.1/index.js";
-import { parseCpuToMillicores, parseMemoryToBytes, generateDevWorkspaceToCreate } from '../common/utils.js';
+import { parseCpuToMillicores, parseMemoryToBytes, generateDevWorkspaceToCreate, getDevWorkspacesFromApiServer } from '../common/utils.js';
 
 const inCluster = __ENV.IN_CLUSTER === 'true';
 const apiServer = inCluster ? `https://kubernetes.default.svc` : __ENV.KUBE_API;
@@ -110,7 +110,7 @@ export function setup() {
 
 export default function () {
   if (maxDevWorkspaces > 0) {
-    const { error, devWorkspaces } = getDevWorkspacesFromApiServer();
+    const { error, devWorkspaces } = getDevWorkspacesFromApiServer(apiServer, loadTestNamespace, headers, useSeparateNamespaces);
     if (error) {
       return;
     }
@@ -493,28 +493,3 @@ function deleteAllSeparateNamespaces() {
   }
 }
 
-function getDevWorkspacesFromApiServer() {
-  const basePath = useSeparateNamespaces
-      ? `${apiServer}/apis/workspace.devfile.io/v1alpha2/devworkspaces`
-      : `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${loadTestNamespace}/devworkspaces`;
-
-  const url = `${basePath}?labelSelector=${labelKey}%3D${labelType}`;
-  const res = http.get(url, { headers });
-
-  if (res.status !== 200) {
-    const errorMsg = `Failed to fetch DevWorkspaces: ${res.status} ${res.statusText || ''}`;
-    console.error(errorMsg);
-
-    return {
-      error: errorMsg,
-      devWorkspaces: null,
-    };
-  }
-
-  const body = JSON.parse(res.body);
-
-  return {
-    error: null,
-    devWorkspaces: body.items,
-  };
-}
