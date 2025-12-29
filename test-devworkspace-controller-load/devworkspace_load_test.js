@@ -19,6 +19,7 @@ import {Trend, Counter} from 'k6/metrics';
 import { test } from 'k6/execution';
 import {htmlReport} from "https://raw.githubusercontent.com/benc-uk/k6-reporter/main/dist/bundle.js";
 import {textSummary} from "https://jslib.k6.io/k6-summary/0.0.1/index.js";
+import { parseCpuToMillicores, parseMemoryToBytes, generateDevWorkspaceToCreate } from '../common/utils.js';
 
 const inCluster = __ENV.IN_CLUSTER === 'true';
 const apiServer = inCluster ? `https://kubernetes.default.svc` : __ENV.KUBE_API;
@@ -26,7 +27,6 @@ const token = inCluster ? open('/var/run/secrets/kubernetes.io/serviceaccount/to
 const useSeparateNamespaces = __ENV.SEPARATE_NAMESPACES === "true";
 const deleteDevWorkspaceAfterReady = __ENV.DELETE_DEVWORKSPACE_AFTER_READY === "true";
 const operatorNamespace = __ENV.DWO_NAMESPACE || 'openshift-operators';
-const externalDevWorkspaceLink = __ENV.DEVWORKSPACE_LINK || '';
 const shouldCreateAutomountResources = (__ENV.CREATE_AUTOMOUNT_RESOURCES || 'false') === 'true';
 const maxVUs = Number(__ENV.MAX_VUS || 50);
 const maxDevWorkspaces = Number(__ENV.MAX_DEVWORKSPACES || -1);
@@ -35,7 +35,6 @@ const autoMountConfigMapName = 'dwo-load-test-automount-configmap';
 const autoMountSecretName = 'dwo-load-test-automount-secret';
 const labelType = "test-type";
 const labelKey = "load-test";
-const loadTestDurationInMinutes = __ENV.TEST_DURATION_IN_MINUTES || "25";
 const loadTestNamespace = __ENV.LOAD_TEST_NAMESPACE || "loadtest-devworkspaces";
 
 const headers = {
@@ -494,58 +493,6 @@ function deleteAllSeparateNamespaces() {
   }
 }
 
-function createOpinionatedDevWorkspace() {
-  return {
-    apiVersion: "workspace.devfile.io/v1alpha2", kind: "DevWorkspace", metadata: {
-      name: "minimal-dw",
-      namespace: loadTestNamespace,
-      labels: {
-        [labelKey]: labelType
-      }
-    }, spec: {
-      started: true, template: {
-        attributes: {
-          "controller.devfile.io/storage-type": "ephemeral",
-        }, components: [{
-          name: "dev", container: {
-            image: "registry.access.redhat.com/ubi9/ubi-micro:9.6-1752751762",
-            command: ["sleep", "3600"],
-            imagePullPolicy: "IfNotPresent",
-            memoryLimit: "64Mi",
-            memoryRequest: "32Mi",
-            cpuLimit: "200m",
-            cpuRequest: "100m"
-          },
-        },],
-      },
-    },
-  };
-}
-
-function parseJSONResponseToDevWorkspace(response) {
-  let devWorkspace;
-  try {
-    devWorkspace = response.json();
-  } catch (e) {
-    throw new Error(`[DW CREATE] Failed to parse JSON : ${response.body}: ${e.message}`);
-  }
-  return devWorkspace;
-}
-
-function downloadAndParseExternalWorkspace(externalDevWorkspaceLink) {
-  let manifest;
-  if (externalDevWorkspaceLink) {
-    const res = http.get(externalDevWorkspaceLink);
-
-    if (res.status !== 200) {
-      throw new Error(`[DW CREATE] Failed to fetch JSON content from ${externalDevWorkspaceLink}, got ${res.status}`);
-    }
-    manifest = parseJSONResponseToDevWorkspace(res);
-  }
-
-  return manifest;
-}
-
 function getDevWorkspacesFromApiServer() {
   const basePath = useSeparateNamespaces
       ? `${apiServer}/apis/workspace.devfile.io/v1alpha2/devworkspaces`
@@ -570,53 +517,4 @@ function getDevWorkspacesFromApiServer() {
     error: null,
     devWorkspaces: body.items,
   };
-}
-
-function generateDevWorkspaceToCreate(vuId, iteration, namespace) {
-  const name = `dw-test-${vuId}-${iteration}`;
-  let devWorkspace = {};
-  if (externalDevWorkspaceLink.length > 0) {
-    devWorkspace = downloadAndParseExternalWorkspace(externalDevWorkspaceLink);
-  } else {
-    devWorkspace = createOpinionatedDevWorkspace();
-  }
-  devWorkspace.metadata.name = name;
-  devWorkspace.metadata.namespace = namespace;
-  devWorkspace.metadata.labels = {
-    [labelKey]: labelType
-  }
-  return devWorkspace;
-}
-
-function generateLoadTestStages(max) {
-  const stageDefinitions = [
-    { percent: 0.25, target: Math.floor(max * 0.25) },
-    { percent: 0.25, target: Math.floor(max * 0.5) },
-    { percent: 0.2, target: Math.floor(max * 0.75) },
-    { percent: 0.15, target: max },
-    { percent: 0.10, target: Math.floor(max * 0.5) },
-    { percent: 0.05, target: 0 },
-  ];
-
-  return stageDefinitions.map(({ percent, target }) => ({
-    duration: `${Math.round(loadTestDurationInMinutes * percent)}m`,
-    target,
-  }));
-}
-
-function parseMemoryToBytes(memStr) {
-  if (memStr.endsWith("Ki")) return parseInt(memStr) * 1024;
-  if (memStr.endsWith("Mi")) return parseInt(memStr) * 1024 * 1024;
-  if (memStr.endsWith("Gi")) return parseInt(memStr) * 1024 * 1024 * 1024;
-  if (memStr.endsWith("n")) return parseInt(memStr) / 1e9;
-  if (memStr.endsWith("u")) return parseInt(memStr) / 1e6;
-  if (memStr.endsWith("m")) return parseInt(memStr) / 1e3;
-  return parseInt(memStr); // bytes
-}
-
-function parseCpuToMillicores(cpuStr) {
-  if (cpuStr.endsWith("n")) return Math.round(parseInt(cpuStr) / 1e6);
-  if (cpuStr.endsWith("u")) return Math.round(parseInt(cpuStr) / 1e3);
-  if (cpuStr.endsWith("m")) return parseInt(cpuStr);
-  return Math.round(parseFloat(cpuStr) * 1000);
 }

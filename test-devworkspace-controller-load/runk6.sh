@@ -1,7 +1,7 @@
 #!/bin/bash
 
-source test/load/provision-che-workspace-namespace.sh
-source test/load/che-cert-bundle-utils.sh
+source test-devworkspace-controller-load/provision-che-workspace-namespace.sh
+source test-devworkspace-controller-load/che-cert-bundle-utils.sh
 
 
 MODE="binary"  # or 'operator'
