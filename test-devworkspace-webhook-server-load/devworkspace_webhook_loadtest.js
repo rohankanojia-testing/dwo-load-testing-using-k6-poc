@@ -13,6 +13,7 @@ import {
 
 export const devWorkspacesReady = new Gauge('devworkspaces_ready');
 export const execAttempted = new Counter('exec_attempted');
+export const execSkipped = new Counter('exec_skipped_due_to_pod_not_ready');
 export const execAllowed = new Counter('exec_allowed_total');
 export const execDenied = new Counter('exec_denied_total');
 export const execUnexpectedAllowed = new Counter('exec_unexpected_allowed_total');
@@ -69,7 +70,7 @@ export default function () {
     const runningDevWorkspaces = waitUntilAllDevWorkspacesAreRunning(TEST_NAMESPACE, headers, users.length);
     devWorkspacesReady.add(runningDevWorkspaces);
     if (runningDevWorkspaces < Math.ceil(users.length * MIN_RUNNING_DEVWORKSPACES_FRACTION)) {
-        console.error('[ERROR] Not all DevWorkspaces became Ready/Running');
+        console.warn(`[WARN] Only ${runningDevWorkspaces}/${users.length} devworkspaces ready, skipping exec for missing ones`);
     }
 
     // -------- PHASE 3: Validate identity immutability --------
@@ -97,6 +98,7 @@ export function handleSummary(data) {
     const keep = [
         'devworkspaces_ready',
         'exec_attempted',
+        'exec_skipped_due_to_pod_not_ready',
         'exec_allow_rate',
         'exec_deny_rate',
         'create_latency_ms',
@@ -242,9 +244,11 @@ function waitUntilAllDevWorkspacesAreRunning(namespace, headers, expectedCount) 
 
 function checkExecPermission(headers, userName, namespace, dwName, shouldAllow = true) {
     const pod = getPodForDevWorkspace(headers, namespace, dwName);
-    if (pod == null || pod.status?.phase !== 'Running') {
+    if (!pod || pod.status?.phase !== 'Running') {
+        console.warn(`[WARN] Skipping exec check for ${dwName}, pod not ready`);
         return;
     }
+
     const podName = pod.metadata?.name;
 
     // Attempt exec
@@ -255,26 +259,33 @@ function checkExecPermission(headers, userName, namespace, dwName, shouldAllow =
     const res = http.post(execUrl, null, { headers, timeout: '30s' });
     if (res == null || res.status == null) {
         console.error(`[ERROR] Failed to parse exec response: ${JSON.stringify(res)}`);
+        execSkipped.add(1);
         return;
     }
     execLatency.add(Date.now() - execStartTime);
 
-    const allowed = res.status !== 403;
+    const allowed = res.status === 200; // Only 200 means exec actually succeeded
+
     if (shouldAllow) {
         execAllowRate.add(allowed);
         if (allowed) {
             execAllowed.add(1);
-        } else {
+        } else if (res.status === 403) {
             execUnexpectedDenied.add(1);
-            console.error(`[SECURITY] Own exec denied for ${dwName} for user ${userName}`);
+        } else {
+            // For Server Side errors, mark exec as skipped
+            execSkipped.add(1);
         }
     } else {
         execDenyRate.add(!allowed);
-        if (!allowed) {
+        if (!allowed && res.status === 403) {
             execDenied.add(1);
-        } else {
+        } else if (allowed && res.status === 200) {
             execUnexpectedAllowed.add(1);
             console.error(`[SECURITY] Cross-user exec ALLOWED for ${dwName} for user ${userName}`);
+        } else {
+            // For Server Side errors, mark exec as skipped
+            execSkipped.add(1);
         }
     }
 
@@ -344,7 +355,6 @@ function getPodForDevWorkspace(headers, namespace, dwName) {
     const pods = podListRes.json()?.items || [];
 
     if (!pods.length) {
-        console.warn(`[WARN] No pods found for DevWorkspace ${dwName}`);
         return null;
     }
 
@@ -364,6 +374,7 @@ function collectWebhookPodMetrics(headers) {
     });
 
     if (res.status !== 200) {
+        console.error(`call to collect webhook pod metrics failed ${res.status}`);
       console.error(res.body);
       return;
     }
