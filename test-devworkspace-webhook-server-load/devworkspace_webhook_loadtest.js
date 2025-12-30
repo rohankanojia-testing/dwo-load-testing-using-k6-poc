@@ -238,14 +238,32 @@ function waitUntilAllDevWorkspacesAreRunning(namespace, headers, expectedCount) 
         attempts++;
     }
 
-    console.error('[ERROR] Timeout waiting for all DevWorkspaces to become Ready/Running');
     return runningDevWorkspaces;
+}
+
+function checkExecResponse(res) {
+    if (!res?.body || typeof res.body !== 'string') {
+        return false;
+    }
+
+    try {
+        const parsedResponse = JSON.parse(res.body);
+        // HTTP failure is expected here because `exec` is a WebSocket operation.
+        // The API responds with 400 + "Upgrade request required" to signal success.
+        return (
+            parsedResponse.code === 400 &&
+            typeof parsedResponse.message === 'string' &&
+            parsedResponse.message.toLowerCase().includes('upgrade request required')
+        );
+    } catch (e) {
+        // Assume failure to parse body as not allowed
+        return false;
+    }
 }
 
 function checkExecPermission(headers, userName, namespace, dwName, shouldAllow = true) {
     const pod = getPodForDevWorkspace(headers, namespace, dwName);
     if (!pod || pod.status?.phase !== 'Running') {
-        console.warn(`[WARN] Skipping exec check for ${dwName}, pod not ready`);
         return;
     }
 
@@ -257,14 +275,14 @@ function checkExecPermission(headers, userName, namespace, dwName, shouldAllow =
     const execUrl = `${K8S_API}/api/v1/namespaces/${namespace}/pods/${podName}/exec?command=echo&command=hello`;
 
     const res = http.post(execUrl, null, { headers, timeout: '30s' });
-    if (res == null || res.status == null) {
+    if (!res || res.status == null) {
         console.error(`[ERROR] Failed to parse exec response: ${JSON.stringify(res)}`);
         execSkipped.add(1);
         return;
     }
     execLatency.add(Date.now() - execStartTime);
 
-    const allowed = res.status === 200; // Only 200 means exec actually succeeded
+    const allowed = checkExecResponse(res);
 
     if (shouldAllow) {
         execAllowRate.add(allowed);
@@ -374,8 +392,6 @@ function collectWebhookPodMetrics(headers) {
     });
 
     if (res.status !== 200) {
-        console.error(`call to collect webhook pod metrics failed ${res.status}`);
-      console.error(res.body);
       return;
     }
   
