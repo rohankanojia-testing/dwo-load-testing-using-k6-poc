@@ -16,7 +16,7 @@ DW_API_GROUP="workspace.devfile.io"
 DW_RESOURCE="devworkspaces"
 CLUSTER_ROLE_NAME="k6-devworkspace-webhook-server-role"
 TOKEN_TTL="15m"
-TOKENS_JSON=""
+TOKENS_FILE=""
 K6_SCRIPT="${K6_SCRIPT:-test-devworkspace-webhook-server-load/devworkspace_webhook_loadtest.js}"
 
 # ----------------
@@ -80,6 +80,7 @@ parse_arguments() {
 }
 
 cleanup() {
+  [[ -n "${TOKENS_FILE:-}" && -f "${TOKENS_FILE}" ]] && rm -f "${TOKENS_FILE}"
   log "🧹 Cleaning up namespace ${LOAD_TEST_NAMESPACE}"
   $KUBECTL delete ns "${LOAD_TEST_NAMESPACE}" --ignore-not-found
 }
@@ -124,7 +125,11 @@ EOF
 generate_tokens_json() {
   log "👥 Creating ${N_USERS} service accounts and tokens"
 
-  TOKENS_JSON="["
+  TOKENS_FILE="$(mktemp)"
+  log "📄 Writing tokens to ${TOKENS_FILE}"
+
+  echo "[" > "${TOKENS_FILE}"
+
   for i in $(seq 1 "${N_USERS}"); do
     local sa="user-${i}"
 
@@ -142,12 +147,18 @@ generate_tokens_json() {
     local token
     token=$($KUBECTL create token "${sa}" -n "${LOAD_TEST_NAMESPACE}" --duration="${TOKEN_TTL}")
 
-    TOKENS_JSON+="{\"user\":\"${sa}\",\"namespace\":\"${LOAD_TEST_NAMESPACE}\",\"token\":\"${token}\"}"
-
-    [[ "$i" -lt "$N_USERS" ]] && TOKENS_JSON+=","
+    cat >> "${TOKENS_FILE}" <<EOF
+  {
+    "user": "${sa}",
+    "namespace": "${LOAD_TEST_NAMESPACE}",
+    "token": "${token}"
+  }$( [[ "$i" -lt "$N_USERS" ]] && echo "," )
+EOF
   done
-  TOKENS_JSON+="]"
+
+  echo "]" >> "${TOKENS_FILE}"
 }
+
 
 # ----------------
 # k6 execution
@@ -156,7 +167,7 @@ run_k6_load_test() {
   log "🚀 Running k6 load test"
 
   export N_USERS
-  export K6_USERS_JSON="${TOKENS_JSON}"
+  export K6_USERS_FILE="${TOKENS_FILE}"
   export KUBE_API
   export LOAD_TEST_NAMESPACE
   export WEBHOOK_NAMESPACE

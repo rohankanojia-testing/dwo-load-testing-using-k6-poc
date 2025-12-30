@@ -36,12 +36,12 @@ const MIN_RUNNING_DEVWORKSPACES_FRACTION = Number(__ENV.MIN_RUNNING_FRACTION || 
 const devWorkspaceReadyTimeout = Number(__ENV.DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS || 120);
 
 const users = new SharedArray('users', () => {
-    const usersJson = __ENV.K6_USERS_JSON;
-    if (!usersJson) {
-        throw new Error('K6_USERS_JSON environment variable is not set');
+    const usersJsonFile = __ENV.K6_USERS_FILE;
+    if (!usersJsonFile) {
+        throw new Error('K6_USERS_FILE environment variable is not set');
     }
     try {
-        return JSON.parse(usersJson);
+        return JSON.parse(open(usersJsonFile));
     } catch (err) {
         throw new Error(`Failed to parse K6_USERS_JSON: ${err.message}`);
     }
