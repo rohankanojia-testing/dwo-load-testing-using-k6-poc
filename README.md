@@ -2,8 +2,8 @@
 
 This directory contains load testing tools for the DevWorkspace Operator using k6. There are two test modules:
 
-1. **DevWorkspace Controller Load Tests** (`test-devworkspace-controller-load/`) - Tests the controller's ability to create and manage multiple DevWorkspaces concurrently
-2. **Webhook Server Load Tests** (`test-devworkspace-webhook-server-load/`) - Tests the webhook server's admission control, identity immutability validation, and exec permission enforcement
+1. [**DevWorkspace Controller Load Tests**](#devworkspace-controller-load-tests) (`test-devworkspace-controller-load/`) - Tests the controller's ability to create and manage multiple DevWorkspaces concurrently
+2. [**Webhook Server Load Tests**](#webhook-server-load-tests) (`test-devworkspace-webhook-server-load/`) - Tests the webhook server's admission control, identity immutability validation, and exec permission enforcement
 
 ## Prerequisites
 

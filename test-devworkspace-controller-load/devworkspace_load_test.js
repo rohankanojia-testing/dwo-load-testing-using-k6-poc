@@ -19,7 +19,13 @@ import {Trend, Counter} from 'k6/metrics';
 import { test } from 'k6/execution';
 import {htmlReport} from "https://raw.githubusercontent.com/benc-uk/k6-reporter/main/dist/bundle.js";
 import {textSummary} from "https://jslib.k6.io/k6-summary/0.0.1/index.js";
-import { parseCpuToMillicores, parseMemoryToBytes, generateDevWorkspaceToCreate, getDevWorkspacesFromApiServer } from '../common/utils.js';
+import {
+  parseCpuToMillicores,
+  parseMemoryToBytes,
+  generateDevWorkspaceToCreate,
+  getDevWorkspacesFromApiServer,
+  doHttpPostDevWorkspaceCreate
+} from '../common/utils.js';
 
 const inCluster = __ENV.IN_CLUSTER === 'true';
 const apiServer = inCluster ? `https://kubernetes.default.svc` : __ENV.KUBE_API;
@@ -200,14 +206,10 @@ export function teardown(data) {
 }
 
 function createNewDevWorkspace(namespace, vuId, iteration) {
-  const baseUrl = `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${namespace}/devworkspaces`;
-
   const manifest = generateDevWorkspaceToCreate(vuId, iteration, namespace);
 
-  const payload = JSON.stringify(manifest);
-
   const createStart = Date.now();
-  const createRes = http.post(baseUrl, payload, {headers});
+  const createRes = doHttpPostDevWorkspaceCreate(apiServer, headers, namespace, manifest);
   check(createRes, {
     'DevWorkspace created': (r) => r.status === 201 || r.status === 409,
   });

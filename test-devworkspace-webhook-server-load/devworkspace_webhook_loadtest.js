@@ -8,7 +8,12 @@ import {
     parseCpuToMillicores,
     parseMemoryToBytes,
     generateDevWorkspaceToCreate,
-    getDevWorkspacesFromApiServer
+    getPodForDevWorkspace,
+    getDevWorkspacesFromApiServer,
+    doHttpPostDevWorkspaceCreate,
+    doHttpPatchDevWorkspaceUpdate,
+    doHttpPatchPodDevWorkspaceUpdate,
+    doHttpGetDevWorkspacesFromApiServer
 } from '../common/utils.js';
 
 export const devWorkspacesReady = new Gauge('devworkspaces_ready');
@@ -31,7 +36,6 @@ const NUMBER_OF_USERS = Number(__ENV.N_USERS || 50);
 const TEST_NAMESPACE = __ENV.LOAD_TEST_NAMESPACE || 'dw-webhook-loadtest';
 const WEBHOOK_NAMESPACE = __ENV.WEBHOOK_NAMESPACE || 'openshift-operators';
 const K8S_API = __ENV.KUBE_API || 'https://api.crc.testing:6443/';
-const DW_API_PATH = `/apis/workspace.devfile.io/v1alpha2/namespaces/${TEST_NAMESPACE}/devworkspaces`;
 const MIN_RUNNING_DEVWORKSPACES_FRACTION = Number(__ENV.MIN_RUNNING_FRACTION || 0.8);
 
 const devWorkspaceReadyTimeout = Number(__ENV.DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS || 120);
@@ -128,11 +132,7 @@ function createDevWorkspace(vuId, iteration, user, namespace, headers) {
     const dwPayload = generateDevWorkspaceToCreate(vuId, iteration, namespace);
 
     const startTime = Date.now();
-    const res = http.post(
-        `${K8S_API}${DW_API_PATH}`,
-        JSON.stringify(dwPayload),
-        { headers, timeout: '60s' }
-    );
+    const res = doHttpPostDevWorkspaceCreate(K8S_API, headers, namespace, dwPayload);
 
     createLatency.add(Date.now() - startTime);
 
@@ -169,11 +169,7 @@ function validateDevWorkspaceIdentityImmutability(headers, dwName) {
     };
 
     const mutateDevWorkspaceStartTime = Date.now();
-    const res = http.patch(
-        `${K8S_API}${DW_API_PATH}/${dwName}`,
-        JSON.stringify(forbiddenPatch),
-        { headers: patchHeaders, timeout: '30s' }
-    );
+    const res = doHttpPatchDevWorkspaceUpdate(K8S_API, patchHeaders, TEST_NAMESPACE, forbiddenPatch, dwName);
     mutatingWebhookLatency.add(Date.now() - mutateDevWorkspaceStartTime);
     assertForbidden(res, 'DevWorkspace', dwName, "admission webhook \"mutate.devworkspace-controller.svc\" denied the request:" +
         " label 'controller.devfile.io/creator' is assigned once devworkspace is created and is immutable");
@@ -198,16 +194,12 @@ function validateDevWorkspacePodIdentityImmutability(headers, dwName) {
         'Content-Type': 'application/json-patch+json',
     };
 
-    let pod = getPodForDevWorkspace(headers, TEST_NAMESPACE, dwName);
+    let pod = getPodForDevWorkspace(K8S_API, headers, TEST_NAMESPACE, dwName);
     if (pod == null || pod.status?.phase !== 'Running') {
         return;
     }
     let validatePodIdentityImmutability = Date.now();
-    const res = http.patch(
-        `${K8S_API}/api/v1/namespaces/${TEST_NAMESPACE}/pods/${pod.metadata?.name}`,
-        JSON.stringify(forbiddenPatch),
-        { headers: patchHeaders, timeout: '30s' }
-    );
+    const res = doHttpPatchPodDevWorkspaceUpdate(K8S_API, patchHeaders, TEST_NAMESPACE, forbiddenPatch, pod);
     mutatingWebhookLatency.add(Date.now() - validatePodIdentityImmutability);
 
     assertForbidden(res, 'Pod', pod.metadata?.name, "admission webhook \"mutate-ws-resources.devworkspace-controller.svc\" denied the request: " +
@@ -262,7 +254,7 @@ function checkExecResponse(res) {
 }
 
 function checkExecPermission(headers, userName, namespace, dwName, shouldAllow = true) {
-    const pod = getPodForDevWorkspace(headers, namespace, dwName);
+    const pod = getPodForDevWorkspace(K8S_API, headers, namespace, dwName);
     if (!pod || pod.status?.phase !== 'Running') {
         return;
     }
@@ -321,9 +313,7 @@ function checkExecPermission(headers, userName, namespace, dwName, shouldAllow =
 }
 
 function getAllDevWorkspaceNames(namespace, headers) {
-    const url = `${K8S_API}/apis/workspace.devfile.io/v1alpha2/namespaces/${namespace}/devworkspaces`;
-
-    const res = http.get(url, { headers, timeout: '30s' });
+    const res = doHttpGetDevWorkspacesFromApiServer(K8S_API, headers, namespace);
     if (res.status !== 200) {
         console.error(`[ERROR] Failed to list DevWorkspaces: status=${res.status}, body=${res.body}`);
         return [];
@@ -354,30 +344,13 @@ function assertForbidden(res, resourceKind, resourceName, expectedMessage) {
 resource=${resourceName}
 status=${res.status}
 reason=${body?.reason}
-message=${body?.message}`
+message=${body?.message}
+expectedMessage=${expectedMessage}`
         );
     }
     invalidMutatingDeny.add(1);
 }
 
-/**
- * Get the first pod name for a given DevWorkspace
- * @param {Object} headers - HTTP headers
- * @param {string} namespace - Kubernetes namespace
- * @param {string} dwName - DevWorkspace name
- * @returns {string|null} - Pod name or null if not found
- */
-function getPodForDevWorkspace(headers, namespace, dwName) {
-    const podListUrl = `${K8S_API}/api/v1/namespaces/${namespace}/pods?labelSelector=controller.devfile.io/devworkspace_name=${dwName}`;
-    const podListRes = http.get(podListUrl, { headers, timeout: '30s' });
-    const pods = podListRes.json()?.items || [];
-
-    if (!pods.length) {
-        return null;
-    }
-
-    return pods[0];
-}
 
 /**
  * Collect CPU and memory metrics from webhook pods

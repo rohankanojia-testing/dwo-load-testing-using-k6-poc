@@ -5,6 +5,52 @@ const labelType = "test-type";
 const labelKey = "load-test";
 const externalDevWorkspaceLink = __ENV.DEVWORKSPACE_LINK || '';
 
+export function doHttpGetDevWorkspacesFromApiServer(apiServer, headers, namespace) {
+    const url = `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${namespace}/devworkspaces`;
+    return http.get(url, { headers, timeout: '30s' });
+}
+
+export function doHttpPostDevWorkspaceCreate(apiServer, headers, namespace, dwManifest) {
+    const baseUrl = `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${namespace}/devworkspaces`;
+
+    const payload = JSON.stringify(dwManifest);
+    return http.post(baseUrl, payload, {headers});
+}
+
+export function doHttpPatchDevWorkspaceUpdate(apiServer, headers, namespace, dwManifest, dwName) {
+    const baseUrl = `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${namespace}/devworkspaces/${dwName}`;
+
+    const payload = JSON.stringify(dwManifest);
+    return http.patch(baseUrl, payload, {headers});
+}
+
+export function doHttpPatchPodDevWorkspaceUpdate(apiServer, headers, namespace, dwManifest, pod) {
+    const baseUrl = `${apiServer}/api/v1/namespaces/${namespace}/pods/${pod.metadata?.name}`;
+
+    const payload = JSON.stringify(dwManifest);
+    return http.patch(baseUrl, payload, {headers});
+}
+
+/**
+ * Get the first pod name for a given DevWorkspace
+ * @param {string} apiServer - Kubernetes api server
+ * @param {Object} headers - HTTP headers
+ * @param {string} namespace - Kubernetes namespace
+ * @param {string} dwName - DevWorkspace name
+ * @returns {string|null} - Pod name or null if not found
+ */
+export function getPodForDevWorkspace(apiServer, headers, namespace, dwName) {
+    const podListUrl = `${apiServer}/api/v1/namespaces/${namespace}/pods?labelSelector=controller.devfile.io/devworkspace_name=${dwName}`;
+    const podListRes = http.get(podListUrl, { headers, timeout: '30s' });
+    const pods = podListRes.json()?.items || [];
+
+    if (!pods.length) {
+        return null;
+    }
+
+    return pods[0];
+}
+
 export function parseMemoryToBytes(memStr) {
     if (memStr.endsWith("Ki")) return parseInt(memStr) * 1024;
     if (memStr.endsWith("Mi")) return parseInt(memStr) * 1024 * 1024;
