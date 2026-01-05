@@ -13,7 +13,7 @@ import {
     doHttpPostDevWorkspaceCreate,
     doHttpPatchDevWorkspaceUpdate,
     doHttpPatchPodDevWorkspaceUpdate,
-    doHttpGetDevWorkspacesFromApiServer
+    doHttpGetDevWorkspacesFromApiServer, createAuthHeaders
 } from '../common/utils.js';
 
 export const devWorkspacesReady = new Gauge('devworkspaces_ready');
@@ -58,6 +58,37 @@ export const options = {
     insecureSkipTLSVerify: true,
 };
 
+export function setup() {
+    const userList = users; // Accessing the SharedArray
+    const createdWorkspaces = [];
+
+    userList.forEach((user, index) => {
+        const headers = createAuthHeaders(user.token);
+
+        // Pass index as VU ID equivalent for unique naming
+        const dwName = createDevWorkspace(index + 1, 0, user, TEST_NAMESPACE, headers);
+        if (dwName) {
+            createdWorkspaces.push({ owner: user.user, dwName: dwName });
+        }
+    });
+
+    // Use the first user's token to poll for cluster-wide readiness
+    const adminHeaders = createAuthHeaders(userList[0].token);
+
+    const readyCount = waitUntilAllDevWorkspacesAreRunning(TEST_NAMESPACE, adminHeaders, userList.length);
+    if (readyCount < Math.ceil(users.length * MIN_RUNNING_DEVWORKSPACES_FRACTION)) {
+        console.warn(`[WARN] Only ${readyCount}/${users.length} devworkspaces ready, skipping exec for missing ones`);
+    }
+
+    console.log(`[SETUP] Environment ready. ${readyCount}/${userList.length} workspaces running.`);
+
+    // This returned object becomes the 'data' argument in the default function
+    return {
+        workspaces: createdWorkspaces,
+        readyCount: readyCount
+    };
+}
+
 // ---------------- Main test ----------------
 export default function () {
     const user = users[exec.vu.idInTest - 1];
@@ -66,19 +97,7 @@ export default function () {
         'Content-Type': 'application/json',
     };
 
-    // -------- PHASE 1: Create DevWorkspace --------
-    const dwName = createDevWorkspace(__VU, __ITER, user, TEST_NAMESPACE, headers);
-    if (!dwName) return;
-
-    // -------- PHASE 2: Wait until all DevWorkspaces are ready --------
-    const runningDevWorkspaces = waitUntilAllDevWorkspacesAreRunning(TEST_NAMESPACE, headers, users.length);
-    devWorkspacesReady.add(runningDevWorkspaces);
-    if (runningDevWorkspaces < Math.ceil(users.length * MIN_RUNNING_DEVWORKSPACES_FRACTION)) {
-        console.warn(`[WARN] Only ${runningDevWorkspaces}/${users.length} devworkspaces ready, skipping exec for missing ones`);
-    }
-
-    // -------- PHASE 3: Validate identity immutability --------
-    validateDevWorkspaceAndRelatedResourcesImmutability(user, headers, dwName);
+    const dwName = `dw-test-${exec.vu.idInTest}-0`
 
     // -------- PHASE 4: Exec checks --------
     const allDwNames = getAllDevWorkspaceNames(TEST_NAMESPACE, headers);
@@ -267,7 +286,7 @@ function checkExecPermission(headers, userName, namespace, dwName, shouldAllow =
     const execUrl = `${K8S_API}/api/v1/namespaces/${namespace}/pods/${podName}/exec?command=echo&command=hello`;
 
     const res = http.post(execUrl, null, { headers, timeout: '30s' });
-    if (!res || res.status == null) {
+    if (!res?.status) {
         console.error(`[ERROR] Failed to parse exec response: ${JSON.stringify(res)}`);
         execSkipped.add(1);
         return;

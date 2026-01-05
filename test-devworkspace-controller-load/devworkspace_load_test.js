@@ -24,7 +24,8 @@ import {
   parseMemoryToBytes,
   generateDevWorkspaceToCreate,
   getDevWorkspacesFromApiServer,
-  doHttpPostDevWorkspaceCreate
+  doHttpPostDevWorkspaceCreate,
+  createAuthHeaders
 } from '../common/utils.js';
 
 const inCluster = __ENV.IN_CLUSTER === 'true';
@@ -43,9 +44,7 @@ const labelType = "test-type";
 const labelKey = "load-test";
 const loadTestNamespace = __ENV.LOAD_TEST_NAMESPACE || "loadtest-devworkspaces";
 
-const headers = {
-  Authorization: `Bearer ${token}`, 'Content-Type': 'application/json',
-};
+const headers = createAuthHeaders(token);
 
 export const options = {
   scenarios: {

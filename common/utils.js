@@ -5,6 +5,14 @@ const labelType = "test-type";
 const labelKey = "load-test";
 const externalDevWorkspaceLink = __ENV.DEVWORKSPACE_LINK || '';
 
+export function createAuthHeaders(token, contentType = 'application/json') {
+    return {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': contentType,
+    };
+}
+
+
 export function doHttpGetDevWorkspacesFromApiServer(apiServer, headers, namespace) {
     const url = `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${namespace}/devworkspaces`;
     return http.get(url, { headers, timeout: '30s' });
