@@ -54,9 +54,16 @@ const users = new SharedArray('users', () => {
 
 export const options = {
     setupTimeout: `${devWorkspaceReadyTimeout}m`,
-    vus: NUMBER_OF_USERS ,
-    iterations: NUMBER_OF_USERS,
     insecureSkipTLSVerify: true,
+    scenarios: {
+        load_test: {
+            executor: 'shared-iterations',
+            vus: NUMBER_OF_USERS,
+            iterations: NUMBER_OF_USERS,
+            maxDuration: '1h',
+            gracefulStop: '30s',
+        },
+    },
 };
 
 export function setup() {
