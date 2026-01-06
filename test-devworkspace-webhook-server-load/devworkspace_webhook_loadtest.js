@@ -53,6 +53,7 @@ const users = new SharedArray('users', () => {
 });
 
 export const options = {
+    setupTimeout: `${devWorkspaceReadyTimeout}m`,
     vus: NUMBER_OF_USERS ,
     iterations: NUMBER_OF_USERS,
     insecureSkipTLSVerify: true,
@@ -76,6 +77,7 @@ export function setup() {
     const adminHeaders = createAuthHeaders(userList[0].token);
 
     const readyCount = waitUntilAllDevWorkspacesAreRunning(TEST_NAMESPACE, adminHeaders, userList.length);
+    devWorkspacesReady.add(readyCount);
     if (readyCount < Math.ceil(users.length * MIN_RUNNING_DEVWORKSPACES_FRACTION)) {
         console.warn(`[WARN] Only ${readyCount}/${users.length} devworkspaces ready, skipping exec for missing ones`);
     }
