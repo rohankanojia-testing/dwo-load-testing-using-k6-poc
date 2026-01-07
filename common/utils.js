@@ -76,6 +76,78 @@ export function parseCpuToMillicores(cpuStr) {
     return Math.round(parseFloat(cpuStr) * 1000);
 }
 
+/**
+ * Capture baseline pod restart counts for tracking during load tests
+ * @param {string} apiServer - Kubernetes API server URL
+ * @param {Object} headers - HTTP headers with authentication
+ * @param {string} namespace - Kubernetes namespace
+ * @param {string} labelSelector - Label selector to filter pods (e.g., "app=my-app")
+ * @returns {Object} Map of pod name to restart count
+ */
+export function capturePodRestartCounts(apiServer, headers, namespace, labelSelector) {
+    const podsUrl = `${apiServer}/api/v1/namespaces/${namespace}/pods?labelSelector=${labelSelector}`;
+    const res = http.get(podsUrl, {headers});
+
+    const restartCounts = {};
+    if (res.status === 200) {
+        const data = JSON.parse(res.body);
+        data.items.forEach(pod => {
+            const podName = pod.metadata.name;
+            restartCounts[podName] = pod.status.containerStatuses?.[0]?.restartCount || 0;
+        });
+    }
+    return restartCounts;
+}
+
+/**
+ * Check for pod restarts compared to baseline and report new restarts
+ * @param {string} apiServer - Kubernetes API server URL
+ * @param {Object} headers - HTTP headers with authentication
+ * @param {string} namespace - Kubernetes namespace
+ * @param {string} labelSelector - Label selector to filter pods
+ * @param {Object} baselineRestartCounts - Baseline restart counts from capturePodRestartCounts
+ * @param {Object} restartCounterMetric - k6 Counter metric to track restarts (optional)
+ * @returns {Object} Object with totalRestarts count and details array
+ */
+export function checkPodRestarts(apiServer, headers, namespace, labelSelector, baselineRestartCounts, restartCounterMetric = null) {
+    const podsUrl = `${apiServer}/api/v1/namespaces/${namespace}/pods?labelSelector=${labelSelector}`;
+    const res = http.get(podsUrl, {headers});
+
+    const restartDetails = [];
+    let totalRestarts = 0;
+
+    if (res.status === 200) {
+        const data = JSON.parse(res.body);
+        console.log(labelSelector + data.items.length);
+        data.items.forEach(pod => {
+            const podName = pod.metadata.name;
+            const currentRestartCount = pod.status.containerStatuses?.[0]?.restartCount || 0;
+            const baselineRestartCount = baselineRestartCounts[podName] || 0;
+            const newRestarts = currentRestartCount - baselineRestartCount;
+            if (restartCounterMetric) {
+                restartCounterMetric.add(newRestarts);
+            }
+
+            if (newRestarts > 0) {
+                totalRestarts += newRestarts;
+                restartDetails.push({
+                    podName: podName,
+                    restarts: newRestarts,
+                    baseline: baselineRestartCount,
+                    current: currentRestartCount
+                });
+
+                console.warn(`[POD RESTART] ${podName} restarted ${newRestarts} times during test (baseline: ${baselineRestartCount}, current: ${currentRestartCount})`);
+            }
+        });
+    }
+
+    return {
+        totalRestarts: totalRestarts,
+        details: restartDetails
+    };
+}
+
 export function generateDevWorkspaceToCreate(vuId, iteration, namespace) {
     const name = `dw-test-${vuId}-${iteration}`;
     let devWorkspace = {};

@@ -159,7 +159,7 @@ rules:
     resources: ["devworkspaces"]
     verbs: ["create", "get", "list", "watch", "delete", "deletecollection"]
   - apiGroups: [""]
-    resources: ["configmaps", "secrets", "namespaces"]
+    resources: ["pods", "configmaps", "secrets", "namespaces"]
     verbs: ["create", "get", "list", "watch", "delete"]
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods"]

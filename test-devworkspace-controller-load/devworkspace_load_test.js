@@ -15,11 +15,13 @@
 
 import http from 'k6/http';
 import {check, sleep} from 'k6';
-import {Trend, Counter} from 'k6/metrics';
+import {Trend, Counter, Gauge} from 'k6/metrics';
 import { test } from 'k6/execution';
 import {htmlReport} from "https://raw.githubusercontent.com/benc-uk/k6-reporter/main/dist/bundle.js";
 import {textSummary} from "https://jslib.k6.io/k6-summary/0.0.1/index.js";
 import {
+  capturePodRestartCounts,
+  checkPodRestarts,
   parseCpuToMillicores,
   parseMemoryToBytes,
   generateDevWorkspaceToCreate,
@@ -62,6 +64,8 @@ export const options = {
     'devworkspace_ready_failed': ['count<5'],
     'operator_cpu_violations': ['count==0'],
     'operator_mem_violations': ['count==0'],
+    'operator_pod_restarts_total': ['value == 0'],
+    'etcd_pod_restarts_total': ['value==0'],
   }, insecureSkipTLSVerify: true,  // trust self-signed certs like in CRC
 };
 
@@ -77,9 +81,15 @@ const etcdMemory = new Trend('average_etcd_memory'); // in Mi
 const devworkspacesCreated = new Counter('devworkspace_create_count');
 const operatorCpuViolations = new Counter('operator_cpu_violations');
 const operatorMemViolations = new Counter('operator_mem_violations');
+const operatorPodRestarts = new Gauge('operator_pod_restarts_total');
+const etcdPodRestarts = new Gauge('etcd_pod_restarts_total');
 
 const maxCpuMillicores = 250;
 const maxMemoryBytes = 200 * 1024 * 1024;
+
+// Global variables to store baseline restart counts
+let baselineOperatorRestarts = {};
+let baselineEtcdRestarts = {};
 
 let etcdNamespace = 'openshift-etcd';
 let etcdPodNamePattern = 'etcd';
@@ -107,6 +117,14 @@ function detectClusterType() {
 
 export function setup() {
   detectClusterType();
+
+  // Capture baseline pod restart counts
+  const operatorPodSelector = 'app.kubernetes.io/name=devworkspace-controller';
+  baselineOperatorRestarts = capturePodRestartCounts(apiServer, headers, operatorNamespace, operatorPodSelector);
+
+  const etcdPodSelector = `metadata.name=${etcdPodNamePattern}`;
+  baselineEtcdRestarts = capturePodRestartCounts(apiServer, headers, etcdNamespace, etcdPodSelector);
+
   if (shouldCreateAutomountResources) {
     createNewAutomountConfigMap();
     createNewAutomountSecret();
@@ -178,7 +196,22 @@ export function final_cleanup() {
 }
 
 export function handleSummary(data) {
-  const allowed = ['devworkspace_create_count', 'devworkspace_create_duration', 'devworkspace_delete_duration', 'devworkspace_ready_duration', 'devworkspace_ready', 'devworkspace_ready_failed', 'operator_cpu_violations', 'operator_mem_violations', 'average_operator_cpu', 'average_operator_memory', 'etcd_cpu_violations', 'etcd_mem_violations', 'average_etcd_cpu', 'average_etcd_memory'];
+  const allowed = [
+    'devworkspace_create_count',
+    'devworkspace_create_duration',
+    'devworkspace_delete_duration',
+    'devworkspace_ready_duration',
+    'devworkspace_ready',
+    'devworkspace_ready_failed',
+    'operator_cpu_violations',
+    'operator_mem_violations',
+    'average_operator_cpu',
+    'average_operator_memory',
+    'operator_pod_restarts_total',
+    'etcd_pod_restarts_total',
+    'average_etcd_cpu',
+    'average_etcd_memory'
+  ];
 
   const filteredData = JSON.parse(JSON.stringify(data));
   for (const key of Object.keys(filteredData.metrics)) {
@@ -325,6 +358,10 @@ function checkDevWorkspaceOperatorMetrics() {
       [`[${name}] Memory < ${Math.round(maxMemoryBytes / 1024 / 1024)}Mi`]: () => memOk,
     });
   }
+
+  // Check for pod restarts
+  const operatorPodSelector = 'app.kubernetes.io/name=devworkspace-controller';
+  checkPodRestarts(apiServer, headers, operatorNamespace, operatorPodSelector, baselineOperatorRestarts, operatorPodRestarts);
 }
 
 function checkEtcdMetrics() {
@@ -376,6 +413,10 @@ function checkEtcdMetrics() {
     etcdCpu.add(cpu);
     etcdMemory.add(memory / 1024 / 1024);
   }
+
+  // Check for pod restarts
+  const etcdPodSelector = `app=${etcdPodNamePattern}`;
+  checkPodRestarts(apiServer, headers, etcdNamespace, etcdPodSelector, baselineEtcdRestarts, etcdPodRestarts);
 }
 
 function createNewNamespace(namespaceName) {

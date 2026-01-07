@@ -2,18 +2,21 @@ import http from 'k6/http';
 import {check, sleep} from 'k6';
 import exec from 'k6/execution';
 import {SharedArray} from 'k6/data';
-import {Counter, Rate, Trend, Gauge} from 'k6/metrics';
+import {Counter, Gauge, Trend} from 'k6/metrics';
 import {textSummary} from "https://jslib.k6.io/k6-summary/0.0.1/index.js";
 import {
-    parseCpuToMillicores,
-    parseMemoryToBytes,
-    generateDevWorkspaceToCreate,
-    getPodForDevWorkspace,
-    getDevWorkspacesFromApiServer,
-    doHttpPostDevWorkspaceCreate,
+    capturePodRestartCounts,
+    checkPodRestarts,
+    createAuthHeaders,
+    doHttpGetDevWorkspacesFromApiServer,
     doHttpPatchDevWorkspaceUpdate,
     doHttpPatchPodDevWorkspaceUpdate,
-    doHttpGetDevWorkspacesFromApiServer, createAuthHeaders
+    doHttpPostDevWorkspaceCreate,
+    generateDevWorkspaceToCreate,
+    getDevWorkspacesFromApiServer,
+    getPodForDevWorkspace,
+    parseCpuToMillicores,
+    parseMemoryToBytes
 } from '../common/utils.js';
 
 export const devWorkspacesReady = new Gauge('devworkspaces_ready');
@@ -23,14 +26,14 @@ export const execAllowed = new Counter('exec_allowed_total');
 export const execDenied = new Counter('exec_denied_total');
 export const execUnexpectedAllowed = new Counter('exec_unexpected_allowed_total');
 export const execUnexpectedDenied = new Counter('exec_unexpected_denied_total');
-export const execAllowRate = new Rate('exec_allow_rate');
-export const execDenyRate = new Rate('exec_deny_rate');
 export const execLatency = new Trend('exec_latency_ms');
 export const createLatency = new Trend('create_latency_ms');
-export const invalidMutatingDeny = new Counter('invalid_mutating_deny_ms');
+export const invalidMutatingDeny = new Counter('invalid_mutating_deny_total');
 export const mutatingWebhookLatency = new Trend('mutating_latency_ms');
+export const validatingWebhookLatency = new Trend('validating_latency_ms');
 export const webhookCpuMillicores = new Trend('average_webhook_cpu_millicores');
 export const webhookMemoryMB = new Trend('average_webhook_memory_mb');
+export const webhookPodRestarts = new Gauge('webhook_pod_restarts_total');
 
 const NUMBER_OF_USERS = Number(__ENV.N_USERS || 50);
 const TEST_NAMESPACE = __ENV.LOAD_TEST_NAMESPACE || 'dw-webhook-loadtest';
@@ -39,6 +42,10 @@ const K8S_API = __ENV.KUBE_API || 'https://api.crc.testing:6443/';
 const MIN_RUNNING_DEVWORKSPACES_FRACTION = Number(__ENV.MIN_RUNNING_FRACTION || 0.8);
 
 const devWorkspaceReadyTimeout = Number(__ENV.DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS || 120);
+
+// Global variable to track baseline webhook pod restart counts
+// This is set once in setup() and read in default(), which is safe in k6
+let baselineWebhookPodRestarts = {};
 
 const users = new SharedArray('users', () => {
     const usersJsonFile = __ENV.K6_USERS_FILE;
@@ -64,9 +71,18 @@ export const options = {
             gracefulStop: '30s',
         },
     },
+    thresholds: {
+        'exec_unexpected_allowed_total': ['count==0'],
+        'exec_unexpected_denied_total': ['count==0'],
+
+        'webhook_pod_restarts_total': ['value == 0'],
+
+        'exec_skipped_due_to_pod_not_ready': ['count<' + Math.ceil(NUMBER_OF_USERS * 0.05)], // Less than 5% pods not ready
+    },
 };
 
 export function setup() {
+    const setupStartTime = Date.now();
     const userList = users; // Accessing the SharedArray
     const createdWorkspaces = [];
 
@@ -83,13 +99,18 @@ export function setup() {
     // Use the first user's token to poll for cluster-wide readiness
     const adminHeaders = createAuthHeaders(userList[0].token);
 
+    // Capture baseline webhook pod restart counts
+    const webhookPodSelector = 'app.kubernetes.io/name=devworkspace-webhook-server';
+    baselineWebhookPodRestarts = capturePodRestartCounts(K8S_API, adminHeaders, WEBHOOK_NAMESPACE, webhookPodSelector);
+
     const readyCount = waitUntilAllDevWorkspacesAreRunning(TEST_NAMESPACE, adminHeaders, userList.length);
     devWorkspacesReady.add(readyCount);
     if (readyCount < Math.ceil(users.length * MIN_RUNNING_DEVWORKSPACES_FRACTION)) {
         console.warn(`[WARN] Only ${readyCount}/${users.length} devworkspaces ready, skipping exec for missing ones`);
     }
 
-    console.log(`[SETUP] Environment ready. ${readyCount}/${userList.length} workspaces running.`);
+    const setupDurationSec = (Date.now() - setupStartTime) / 1000;
+    console.log(`[SETUP] Environment ready in ${setupDurationSec.toFixed(2)}s. ${readyCount}/${userList.length} workspaces running.`);
 
     // This returned object becomes the 'data' argument in the default function
     return {
@@ -108,8 +129,12 @@ export default function () {
 
     const dwName = `dw-test-${exec.vu.idInTest}-0`
 
-    // -------- PHASE 4: Exec checks --------
+    // -------- PHASE 1: Identity immutability checks --------
+    validateDevWorkspaceAndRelatedResourcesImmutability(user, headers, dwName);
+
+    // -------- PHASE 2: Exec permission checks --------
     const allDwNames = getAllDevWorkspaceNames(TEST_NAMESPACE, headers);
+    let checkCount = 0;
     for (const name of allDwNames) {
         const isOwn = name === dwName;
 
@@ -121,7 +146,17 @@ export default function () {
             isOwn // own DW → allow, others → forbid
         );
 
-        // Monitor webhook pod metrics after each exec check
+        // Only VU 1 collects metrics to avoid thundering herd
+        // Collects every 5 exec checks to reduce overhead while maintaining visibility
+        checkCount++;
+        if (exec.vu.idInTest === 1 && checkCount % 5 === 0) {
+            collectWebhookPodMetrics(headers);
+        }
+    }
+
+    // Final metrics collection at the end of iteration for all VUs
+    // This staggers naturally as VUs finish at different times
+    if (exec.vu.idInTest <= 3) {
         collectWebhookPodMetrics(headers);
     }
 }
@@ -129,20 +164,31 @@ export default function () {
 export function handleSummary(data) {
     const keep = [
         'devworkspaces_ready',
+        // Execution metrics
         'exec_attempted',
         'exec_skipped_due_to_pod_not_ready',
-        'exec_allow_rate',
-        'exec_deny_rate',
-        'create_latency_ms',
-        'exec_latency_ms',
-        'average_webhook_cpu_millicores',
-        'average_webhook_memory_mb',
-        'mutating_latency_ms',
-        'invalid_mutating_deny_ms',
         'exec_allowed_total',
         'exec_denied_total',
         'exec_unexpected_allowed_total',
         'exec_unexpected_denied_total',
+        'exec_errors_by_status',
+
+        // Latency metrics
+        'create_latency_ms',
+        'exec_latency_ms',
+        'mutating_latency_ms',
+        'validating_latency_ms',
+
+        // Webhook resource metrics
+        'average_webhook_cpu_millicores',
+        'average_webhook_memory_mb',
+
+        // Webhook reliability metrics
+        'webhook_http_errors_total',
+        'webhook_pod_restarts_total',
+
+        // Validation metrics
+        'invalid_mutating_deny_total',
     ];
 
     for (const k of Object.keys(data.metrics)) {
@@ -300,12 +346,15 @@ function checkExecPermission(headers, userName, namespace, dwName, shouldAllow =
         execSkipped.add(1);
         return;
     }
-    execLatency.add(Date.now() - execStartTime);
+
+    const execDuration = Date.now() - execStartTime;
+    execLatency.add(execDuration);
+    // Exec requests trigger the validating webhook for permission checks
+    validatingWebhookLatency.add(execDuration);
 
     const allowed = checkExecResponse(res);
 
     if (shouldAllow) {
-        execAllowRate.add(allowed);
         if (allowed) {
             execAllowed.add(1);
         } else if (res.status === 403) {
@@ -315,7 +364,6 @@ function checkExecPermission(headers, userName, namespace, dwName, shouldAllow =
             execSkipped.add(1);
         }
     } else {
-        execDenyRate.add(!allowed);
         if (!allowed && res.status === 403) {
             execDenied.add(1);
         } else if (allowed && res.status === 200) {
@@ -388,24 +436,24 @@ function collectWebhookPodMetrics(headers) {
     const metricsUrl = `${K8S_API}/apis/metrics.k8s.io/v1beta1/namespaces/${WEBHOOK_NAMESPACE}/pods?labelSelector=app.kubernetes.io/name=devworkspace-webhook-server`;
     const res = http.get(metricsUrl, {headers});
 
-    check(res, {
-      'Fetched webhook pod metrics successfully': (r) => r.status === 200,
-    });
-
     if (res.status !== 200) {
       return;
     }
-  
+
     const data = JSON.parse(res.body);
     const operatorPods = data.items.filter(p => p.metadata.name.includes("devworkspace-webhook-server"));
-  
+
     for (const pod of operatorPods) {
       const container = pod.containers[0]; // assuming single container
-  
+
       const cpu = parseCpuToMillicores(container.usage.cpu);
       const memory = parseMemoryToBytes(container.usage.memory);
 
       webhookCpuMillicores.add(cpu);
       webhookMemoryMB.add(memory / 1024 / 1024);
     }
+
+    // Track pod restarts using the generic utility
+    const webhookPodSelector = 'app.kubernetes.io/name=devworkspace-webhook-server';
+    checkPodRestarts(K8S_API, headers, WEBHOOK_NAMESPACE, webhookPodSelector, baselineWebhookPodRestarts, webhookPodRestarts);
 }
