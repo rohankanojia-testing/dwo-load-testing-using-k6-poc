@@ -5,7 +5,6 @@ import {SharedArray} from 'k6/data';
 import {Counter, Gauge, Trend} from 'k6/metrics';
 import {textSummary} from "https://jslib.k6.io/k6-summary/0.0.1/index.js";
 import {
-    capturePodRestartCounts,
     checkPodRestarts,
     createAuthHeaders,
     doHttpGetDevWorkspacesFromApiServer,
@@ -43,9 +42,6 @@ const MIN_RUNNING_DEVWORKSPACES_FRACTION = Number(__ENV.MIN_RUNNING_FRACTION || 
 
 const devWorkspaceReadyTimeout = Number(__ENV.DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS || 120);
 
-// Global variable to track baseline webhook pod restart counts
-// This is set once in setup() and read in default(), which is safe in k6
-let baselineWebhookPodRestarts = {};
 
 const users = new SharedArray('users', () => {
     const usersJsonFile = __ENV.K6_USERS_FILE;
@@ -99,9 +95,6 @@ export function setup() {
     // Use the first user's token to poll for cluster-wide readiness
     const adminHeaders = createAuthHeaders(userList[0].token);
 
-    // Capture baseline webhook pod restart counts
-    const webhookPodSelector = 'app.kubernetes.io/name=devworkspace-webhook-server';
-    baselineWebhookPodRestarts = capturePodRestartCounts(K8S_API, adminHeaders, WEBHOOK_NAMESPACE, webhookPodSelector);
 
     const readyCount = waitUntilAllDevWorkspacesAreRunning(TEST_NAMESPACE, adminHeaders, userList.length);
     devWorkspacesReady.add(readyCount);
@@ -455,5 +448,5 @@ function collectWebhookPodMetrics(headers) {
 
     // Track pod restarts using the generic utility
     const webhookPodSelector = 'app.kubernetes.io/name=devworkspace-webhook-server';
-    checkPodRestarts(K8S_API, headers, WEBHOOK_NAMESPACE, webhookPodSelector, baselineWebhookPodRestarts, webhookPodRestarts);
+    checkPodRestarts(K8S_API, headers, WEBHOOK_NAMESPACE, webhookPodSelector, webhookPodRestarts);
 }

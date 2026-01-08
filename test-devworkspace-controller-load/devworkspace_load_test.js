@@ -20,14 +20,14 @@ import { test } from 'k6/execution';
 import {htmlReport} from "https://raw.githubusercontent.com/benc-uk/k6-reporter/main/dist/bundle.js";
 import {textSummary} from "https://jslib.k6.io/k6-summary/0.0.1/index.js";
 import {
-  capturePodRestartCounts,
   checkPodRestarts,
   parseCpuToMillicores,
   parseMemoryToBytes,
   generateDevWorkspaceToCreate,
   getDevWorkspacesFromApiServer,
   doHttpPostDevWorkspaceCreate,
-  createAuthHeaders
+  createAuthHeaders,
+  getPodRestartCounts
 } from '../common/utils.js';
 
 const inCluster = __ENV.IN_CLUSTER === 'true';
@@ -87,10 +87,6 @@ const etcdPodRestarts = new Gauge('etcd_pod_restarts_total');
 const maxCpuMillicores = 250;
 const maxMemoryBytes = 200 * 1024 * 1024;
 
-// Global variables to store baseline restart counts
-let baselineOperatorRestarts = {};
-let baselineEtcdRestarts = {};
-
 let etcdNamespace = 'openshift-etcd';
 let etcdPodNamePattern = 'etcd';
 
@@ -117,13 +113,6 @@ function detectClusterType() {
 
 export function setup() {
   detectClusterType();
-
-  // Capture baseline pod restart counts
-  const operatorPodSelector = 'app.kubernetes.io/name=devworkspace-controller';
-  baselineOperatorRestarts = capturePodRestartCounts(apiServer, headers, operatorNamespace, operatorPodSelector);
-
-  const etcdPodSelector = `metadata.name=${etcdPodNamePattern}`;
-  baselineEtcdRestarts = capturePodRestartCounts(apiServer, headers, etcdNamespace, etcdPodSelector);
 
   if (shouldCreateAutomountResources) {
     createNewAutomountConfigMap();
@@ -361,7 +350,7 @@ function checkDevWorkspaceOperatorMetrics() {
 
   // Check for pod restarts
   const operatorPodSelector = 'app.kubernetes.io/name=devworkspace-controller';
-  checkPodRestarts(apiServer, headers, operatorNamespace, operatorPodSelector, baselineOperatorRestarts, operatorPodRestarts);
+  checkPodRestarts(apiServer, headers, operatorNamespace, operatorPodSelector, operatorPodRestarts);
 }
 
 function checkEtcdMetrics() {
@@ -416,7 +405,7 @@ function checkEtcdMetrics() {
 
   // Check for pod restarts
   const etcdPodSelector = `app=${etcdPodNamePattern}`;
-  checkPodRestarts(apiServer, headers, etcdNamespace, etcdPodSelector, baselineEtcdRestarts, etcdPodRestarts);
+  checkPodRestarts(apiServer, headers, etcdNamespace, etcdPodSelector, etcdPodRestarts);
 }
 
 function createNewNamespace(namespaceName) {
