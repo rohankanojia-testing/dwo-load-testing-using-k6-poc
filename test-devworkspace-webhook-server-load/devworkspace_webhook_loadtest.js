@@ -68,8 +68,12 @@ export const options = {
         },
     },
     thresholds: {
+        'exec_allowed_total': [`count == ${NUMBER_OF_USERS}`],
+        'exec_attempted': [`count == ${NUMBER_OF_USERS * NUMBER_OF_USERS}`],
+        'exec_denied_total': [`count == ${NUMBER_OF_USERS * NUMBER_OF_USERS - NUMBER_OF_USERS}`],
         'exec_unexpected_allowed_total': ['count==0'],
         'exec_unexpected_denied_total': ['count==0'],
+        'invalid_mutating_deny_total': [`count == ${2 * NUMBER_OF_USERS}`],
 
         'webhook_pod_restarts_total': ['value == 0'],
 
