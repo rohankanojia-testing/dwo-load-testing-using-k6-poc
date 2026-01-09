@@ -39,6 +39,7 @@ const TEST_NAMESPACE = __ENV.LOAD_TEST_NAMESPACE || 'dw-webhook-loadtest';
 const WEBHOOK_NAMESPACE = __ENV.WEBHOOK_NAMESPACE || 'openshift-operators';
 const K8S_API = __ENV.KUBE_API || 'https://api.crc.testing:6443/';
 const MIN_RUNNING_DEVWORKSPACES_FRACTION = Number(__ENV.MIN_RUNNING_FRACTION || 0.8);
+const WEBHOOK_POD_SELECTOR = 'app.kubernetes.io/name=devworkspace-webhook-server';
 
 const devWorkspaceReadyTimeout = Number(__ENV.DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS || 120);
 
@@ -98,7 +99,6 @@ export function setup() {
 
     // Use the first user's token to poll for cluster-wide readiness
     const adminHeaders = createAuthHeaders(userList[0].token);
-
 
     const readyCount = waitUntilAllDevWorkspacesAreRunning(TEST_NAMESPACE, adminHeaders, userList.length);
     devWorkspacesReady.add(readyCount);
@@ -450,7 +450,5 @@ function collectWebhookPodMetrics(headers) {
       webhookMemoryMB.add(memory / 1024 / 1024);
     }
 
-    // Track pod restarts using the generic utility
-    const webhookPodSelector = 'app.kubernetes.io/name=devworkspace-webhook-server';
-    checkPodRestarts(K8S_API, headers, WEBHOOK_NAMESPACE, webhookPodSelector, webhookPodRestarts);
+    checkPodRestarts(K8S_API, headers, WEBHOOK_NAMESPACE, WEBHOOK_POD_SELECTOR, webhookPodRestarts);
 }

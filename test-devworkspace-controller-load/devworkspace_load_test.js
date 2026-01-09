@@ -27,7 +27,6 @@ import {
   getDevWorkspacesFromApiServer,
   doHttpPostDevWorkspaceCreate,
   createAuthHeaders,
-  getPodRestartCounts
 } from '../common/utils.js';
 
 const inCluster = __ENV.IN_CLUSTER === 'true';
@@ -45,6 +44,10 @@ const autoMountSecretName = 'dwo-load-test-automount-secret';
 const labelType = "test-type";
 const labelKey = "load-test";
 const loadTestNamespace = __ENV.LOAD_TEST_NAMESPACE || "loadtest-devworkspaces";
+let ETCD_NAMESPACE = 'openshift-etcd';
+let ETCD_POD_NAME_PATTERN = 'etcd';
+const ETCD_POD_SELECTOR = `app=${ETCD_POD_NAME_PATTERN}`;
+const OPERATOR_POD_SELECTOR = 'app.kubernetes.io/name=devworkspace-controller';
 
 const headers = createAuthHeaders(token);
 
@@ -87,9 +90,6 @@ const etcdPodRestarts = new Gauge('etcd_pod_restarts_total');
 const maxCpuMillicores = 250;
 const maxMemoryBytes = 200 * 1024 * 1024;
 
-let etcdNamespace = 'openshift-etcd';
-let etcdPodNamePattern = 'etcd';
-
 function detectClusterType() {
   const apiGroupsUrl = `${apiServer}/apis`;
   const res = http.get(apiGroupsUrl, {headers});
@@ -101,8 +101,8 @@ function detectClusterType() {
       const hasOpenShiftRoutes = groups.some(g => g.name === 'route.openshift.io');
       
       if (!hasOpenShiftRoutes) {
-        etcdNamespace = __ENV.ETCD_NAMESPACE || 'kube-system';
-        etcdPodNamePattern = __ENV.ETCD_POD_NAME_PATTERN || 'kube-proxy';
+        ETCD_NAMESPACE = __ENV.ETCD_NAMESPACE || 'kube-system';
+        ETCD_POD_NAME_PATTERN = __ENV.ETCD_POD_NAME_PATTERN || 'kube-proxy';
         console.log('Detected Kubernetes cluster - using kube-system namespace with kube-proxy');
       }
     } catch (e) {
@@ -249,6 +249,7 @@ function waitUntilDevWorkspaceIsReady(vuId, crName, namespace) {
   const readyStart = Date.now();
   let isReady = false;
   let attempts = 0;
+  let lastPhase = '';
   const pollWaitInterval = 5;
   const maxAttempts = devWorkspaceReadyTimeout / pollWaitInterval;
   let res = {};
@@ -260,6 +261,7 @@ function waitUntilDevWorkspaceIsReady(vuId, crName, namespace) {
       try {
         const body = JSON.parse(res.body);
         const phase = body?.status?.phase;
+        lastPhase = phase;
         if (phase === 'Ready' || phase === 'Running') {
           isReady = true;
           break;
@@ -349,17 +351,16 @@ function checkDevWorkspaceOperatorMetrics() {
   }
 
   // Check for pod restarts
-  const operatorPodSelector = 'app.kubernetes.io/name=devworkspace-controller';
-  checkPodRestarts(apiServer, headers, operatorNamespace, operatorPodSelector, operatorPodRestarts);
+  checkPodRestarts(apiServer, headers, operatorNamespace, OPERATOR_POD_SELECTOR, operatorPodRestarts);
 }
 
 function checkEtcdMetrics() {
-  if (!etcdNamespace || !etcdPodNamePattern) {
-    console.warn(`[ETCD METRICS] Variables not initialized: etcdNamespace=${etcdNamespace}, etcdPodNamePattern=${etcdPodNamePattern}`);
+  if (!ETCD_NAMESPACE || !ETCD_POD_NAME_PATTERN) {
+    console.warn(`[ETCD METRICS] Variables not initialized: etcdNamespace=${ETCD_NAMESPACE}, etcdPodNamePattern=${ETCD_POD_NAME_PATTERN}`);
     return;
   }
 
-  const metricsUrl = `${apiServer}/apis/metrics.k8s.io/v1beta1/namespaces/${etcdNamespace}/pods`;
+  const metricsUrl = `${apiServer}/apis/metrics.k8s.io/v1beta1/namespaces/${ETCD_NAMESPACE}/pods`;
   const res = http.get(metricsUrl, {headers});
 
   check(res, {
@@ -371,14 +372,14 @@ function checkEtcdMetrics() {
   }
 
   const data = JSON.parse(res.body);
-  const etcdPods = data.items.filter(p => p.metadata.name.includes(etcdPodNamePattern));
+  const etcdPods = data.items.filter(p => p.metadata.name.includes(ETCD_POD_NAME_PATTERN));
 
   if (etcdPods.length === 0) {
     if (data.items && data.items.length > 0) {
       const podNames = data.items.map(p => p.metadata.name).join(', ');
-      console.warn(`[ETCD METRICS] No pods found matching pattern '${etcdPodNamePattern}' in namespace '${etcdNamespace}'. Available pods: ${podNames}`);
+      console.warn(`[ETCD METRICS] No pods found matching pattern '${ETCD_POD_NAME_PATTERN}' in namespace '${ETCD_NAMESPACE}'. Available pods: ${podNames}`);
     } else {
-      console.warn(`[ETCD METRICS] No pods found in namespace '${etcdNamespace}'`);
+      console.warn(`[ETCD METRICS] No pods found in namespace '${ETCD_NAMESPACE}'`);
     }
     return;
   }
@@ -391,8 +392,11 @@ function checkEtcdMetrics() {
     const container = pod.containers[0];
     const name = pod.metadata.name;
 
-    if (!container.usage || !container.usage.cpu || !container.usage.memory) {
-      console.warn(`[ETCD METRICS] Pod ${name} has no usage data:`, JSON.stringify(container.usage));
+    if (!container.usage?.cpu || !container.usage?.memory) {
+      console.warn(
+          `[ETCD METRICS] Pod ${name} has no usage data:`,
+          JSON.stringify(container.usage)
+      );
       continue;
     }
 
@@ -403,9 +407,7 @@ function checkEtcdMetrics() {
     etcdMemory.add(memory / 1024 / 1024);
   }
 
-  // Check for pod restarts
-  const etcdPodSelector = `app=${etcdPodNamePattern}`;
-  checkPodRestarts(apiServer, headers, etcdNamespace, etcdPodSelector, etcdPodRestarts);
+  checkPodRestarts(apiServer, headers, ETCD_NAMESPACE, ETCD_POD_SELECTOR, etcdPodRestarts);
 }
 
 function createNewNamespace(namespaceName) {
