@@ -55,7 +55,7 @@ export const options = {
   scenarios: {
     create_and_delete_devworkspaces: {
       executor: 'shared-iterations',
-      vus: maxVUs,
+      vus: 20,
       iterations: maxDevWorkspaces,
       maxDuration: '3h',
     },
