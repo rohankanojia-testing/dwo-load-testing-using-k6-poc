@@ -34,6 +34,10 @@ export const webhookCpuMillicores = new Trend('average_webhook_cpu_millicores');
 export const webhookMemoryMB = new Trend('average_webhook_memory_mb');
 export const webhookPodRestarts = new Gauge('webhook_pod_restarts_total');
 
+// Webhook timeout metrics (API server errors due to webhook unavailability)
+export const mutationWebhookTimeout = new Counter('mutation_webhook_timeout_500');
+export const validationWebhookTimeout = new Counter('validation_webhook_timeout_500');
+
 const NUMBER_OF_USERS = Number(__ENV.N_USERS || 50);
 const TEST_NAMESPACE = __ENV.LOAD_TEST_NAMESPACE || 'dw-webhook-loadtest';
 const WEBHOOK_NAMESPACE = __ENV.WEBHOOK_NAMESPACE || 'openshift-operators';
@@ -79,6 +83,10 @@ export const options = {
         'webhook_pod_restarts_total': ['value == 0'],
 
         'exec_skipped_due_to_pod_not_ready': ['count<' + Math.ceil(NUMBER_OF_USERS * 0.05)], // Less than 5% pods not ready
+
+        // Webhook timeout thresholds - fail if webhooks timeout (indicates saturation)
+        'mutation_webhook_timeout_500': ['count == 0'],
+        'validation_webhook_timeout_500': ['count == 0'],
     },
 };
 
@@ -186,6 +194,10 @@ export function handleSummary(data) {
 
         // Validation metrics
         'invalid_mutating_deny_total',
+
+        // Webhook timeout metrics
+        'mutation_webhook_timeout_500',
+        'validation_webhook_timeout_500',
     ];
 
     for (const k of Object.keys(data.metrics)) {
@@ -349,6 +361,21 @@ function checkExecPermission(headers, userName, namespace, dwName, shouldAllow =
     // Exec requests trigger the validating webhook for permission checks
     validatingWebhookLatency.add(execDuration);
 
+    // Check for validation webhook timeout
+    const body = res.json?.();
+    const isWebhookTimeout =
+        res.status === 500 &&
+        body?.reason === 'InternalError' &&
+        (body?.message?.includes('context deadline exceeded') ||
+         body?.message?.includes('failed calling webhook'));
+
+    if (isWebhookTimeout) {
+        validationWebhookTimeout.add(1);
+        execSkipped.add(1);
+        console.warn(`[WARN] Validation webhook timeout for pod=${podName}`);
+        return;
+    }
+
     const allowed = checkExecResponse(res);
 
     if (shouldAllow) {
@@ -406,12 +433,33 @@ function getAllDevWorkspaceNames(namespace, headers) {
 function assertForbidden(res, resourceKind, resourceName, expectedMessage) {
     const body = res.json?.();
 
+    // Check if this is a webhook timeout (500 with context deadline exceeded)
+    const isWebhookTimeout =
+        res.status === 500 &&
+        body?.reason === 'InternalError' &&
+        (body?.message?.includes('context deadline exceeded') ||
+         body?.message?.includes('failed calling webhook'));
+
+    if (isWebhookTimeout) {
+        mutationWebhookTimeout.add(1);
+        console.warn(
+            `[WARN] Webhook timeout detected
+resource=${resourceName}
+status=${res.status}
+message=${body?.message}`
+        );
+        return;
+    }
+
     const statusOk = res.status === 403;
     const reasonOk = body?.reason === 'Forbidden';
     const messageOk =
         body?.message?.includes(expectedMessage);
 
-    if (!statusOk || !reasonOk || !messageOk) {
+    if (statusOk && reasonOk && messageOk) {
+        // Clean denial - this is the expected behavior
+        invalidMutatingDeny.add(1);
+    } else {
         console.error(
             `[ERROR] Unauthorized ${resourceKind} modification allowed
 resource=${resourceName}
@@ -421,7 +469,6 @@ message=${body?.message}
 expectedMessage=${expectedMessage}`
         );
     }
-    invalidMutatingDeny.add(1);
 }
 
 
