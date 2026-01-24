@@ -372,7 +372,6 @@ function checkExecPermission(headers, userName, namespace, dwName, shouldAllow =
     if (isWebhookTimeout) {
         validationWebhookTimeout.add(1);
         execSkipped.add(1);
-        console.warn(`[WARN] Validation webhook timeout for pod=${podName}`);
         return;
     }
 
@@ -442,12 +441,6 @@ function assertForbidden(res, resourceKind, resourceName, expectedMessage) {
 
     if (isWebhookTimeout) {
         mutationWebhookTimeout.add(1);
-        console.warn(
-            `[WARN] Webhook timeout detected
-resource=${resourceName}
-status=${res.status}
-message=${body?.message}`
-        );
         return;
     }
 
