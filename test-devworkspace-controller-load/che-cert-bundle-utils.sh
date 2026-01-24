@@ -112,51 +112,19 @@ create_devworkspace() {
 
   log_info "Creating DevWorkspace '${dw_name}'..."
   cat <<EOF | kubectl apply -n "${dw_ns}" -f -
-kind: DevWorkspace
 apiVersion: workspace.devfile.io/v1alpha2
+kind: DevWorkspace
 metadata:
-  name: ${dw_name}
-  annotations:
-    che.eclipse.org/che-editor: che-incubator/che-code/latest
-    che.eclipse.org/devfile: |
-      schemaVersion: 2.2.0
-      metadata:
-        generateName: ${dw_name}
-    che.eclipse.org/devfile-source: |
-      url:
-        location: https://github.com/che-samples/web-nodejs-sample.git
-      factory:
-        params: che-editor=che-incubator/che-code/latest
+  name: cert-test
 spec:
   started: true
   template:
-    projects:
-      - name: web-nodejs-sample
-        git:
-          remotes:
-            origin: "https://github.com/che-samples/web-nodejs-sample.git"
     components:
-      - name: dev
+      - name: minimal
         container:
-          image: quay.io/devfile/universal-developer-image:latest
-          memoryLimit: 512Mi
-          memoryRequest: 256Mi
-          cpuRequest: 1000m
-    commands:
-      - id: say-hello
-        exec:
-          component: dev
-          commandLine: echo "Hello from \$(pwd)"
-          workingDir: \${PROJECT_SOURCE}/app
-  contributions:
-    - name: che-code
-      uri: https://eclipse-che.github.io/che-plugin-registry/main/v3/plugins/che-incubator/che-code/latest/devfile.yaml
-      components:
-        - name: che-code-runtime-description
-          container:
-            env:
-              - name: CODE_HOST
-                value: 0.0.0.0
+          image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+          memoryLimit: 128Mi
+          command: ['sh', '-c', 'sleep infinity']
 EOF
 
 
