@@ -115,7 +115,7 @@ create_devworkspace() {
 apiVersion: workspace.devfile.io/v1alpha2
 kind: DevWorkspace
 metadata:
-  name: cert-test
+  name: ${dw_name}
 spec:
   started: true
   template:
@@ -186,6 +186,6 @@ cleanup_resources() {
   local dw_name="$2"
 
   log_info "Cleaning up..."
-  kubectl delete dw "${dw_name}" -n "${dw_ns}" --ignore-not-found
+  kubectl delete dw "${dw_name}" -n "${dw_ns}" --ignore-not-found --wait=false
   rm -f *.pem *.key
 }
