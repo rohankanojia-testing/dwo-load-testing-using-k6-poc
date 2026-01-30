@@ -78,6 +78,7 @@ Each run is stored in a `run_YYYYMMDD_HHMMSS/` directory containing:
 - `logs/` - Directory containing individual test logs
   - `<test_name>.log` - Full test output
   - `<test_name>_metrics.txt` - Extracted metrics and summary
+  - `<test_name>_failure_report.csv` - Failed DevWorkspaces details (if any)
 
 ## Viewing Results
 
@@ -96,12 +97,25 @@ Each run is stored in a `run_YYYYMMDD_HHMMSS/` directory containing:
    cat run_YYYYMMDD_HHMMSS/logs/<test_name>_metrics.txt
    ```
 
+4. Check failed DevWorkspaces (if any):
+   ```bash
+   cat run_YYYYMMDD_HHMMSS/logs/<test_name>_failure_report.csv
+   ```
+
 ## Test Status
 
 - **PASSED**: Test completed successfully
 - **FAILED**: Test failed with errors
 - **TIMEOUT**: Test exceeded maximum time limit
 - **CLEANUP_FAILED**: Pre-test cleanup failed
+
+## Failure Report Format
+
+The `*_failure_report.csv` files contain details about failed DevWorkspaces:
+- Namespace
+- DevWorkspace name
+- Status
+- Error message
 EOREADME
 
 echo "Output directory: $RUN_DIR"
@@ -251,6 +265,20 @@ extract_metrics() {
         echo "--- Errors ---"
         grep -i "error\|failed\|timeout" "$LOG_FILE" | tail -10 || echo "No errors found"
 
+        # Check for failure report
+        local FAILURE_REPORT="${LOG_FILE%.log}_failure_report.csv"
+        if [ -f "$FAILURE_REPORT" ]; then
+            echo ""
+            echo "--- Failed DevWorkspaces ---"
+            local failure_count=$(wc -l < "$FAILURE_REPORT" | xargs)
+            echo "Total failures: $failure_count"
+            echo ""
+            echo "First 5 failures:"
+            head -5 "$FAILURE_REPORT" || true
+            echo ""
+            echo "See full report: $FAILURE_REPORT"
+        fi
+
     } > "$METRICS_FILE"
 }
 
@@ -316,6 +344,19 @@ run_test() {
 
     # Extract metrics from log
     extract_metrics "$TEST_LOG"
+
+    # Copy failure report if it exists
+    if [ -f "logs/dw_failure_report.csv" ]; then
+        local FAILURE_REPORT="$LOG_DIR/${TEST_NAME}_failure_report.csv"
+        cp "logs/dw_failure_report.csv" "$FAILURE_REPORT"
+        echo "Failure report saved: $FAILURE_REPORT"
+
+        # Show failure count
+        local failure_count=$(wc -l < "logs/dw_failure_report.csv" | xargs)
+        if [ "$failure_count" -gt 0 ]; then
+            echo -e "${YELLOW}Found $failure_count failed DevWorkspaces${NC}"
+        fi
+    fi
 
     # Store result
     TEST_RESULTS+=("$TEST_NAME|$test_status|${duration_min}m")
