@@ -5,6 +5,7 @@ source test-devworkspace-controller-load/che-cert-bundle-utils.sh
 
 
 MODE="binary"  # or 'operator'
+EXECUTOR_MODE="shared-iterations"  # or 'ramping-vus'
 LOAD_TEST_NAMESPACE="loadtest-devworkspaces"
 DWO_NAMESPACE="openshift-operators"
 SA_NAME="k6-devworkspace-tester"
@@ -68,7 +69,8 @@ print_help() {
 Usage: $0 [options]
 
 Options:
-  --mode <operator|binary>                    Mode to run the script (default: operator)
+  --mode <operator|binary>                    Mode to run the script (default: binary)
+  --executor <shared-iterations|ramping-vus>  K6 executor mode (default: shared-iterations)
   --max-vus <int>                             Number of virtual users for k6 (default: 100)
   --max-devworkspaces <int>                   Maximum number of DevWorkspaces to create (by default, it's not specified)
   --separate-namespaces <true|false>          Use separate namespaces for workspaces (default: false)
@@ -91,6 +93,8 @@ parse_arguments() {
     case "$1" in
       --mode)
         MODE="$2"; shift 2;;
+      --executor)
+        EXECUTOR_MODE="$2"; shift 2;;
       --max-vus)
         MAX_VUS="$2"; shift 2;;
       --separate-namespaces)
@@ -288,7 +292,9 @@ spec:
       value: '${LOAD_TEST_NAMESPACE}'
     - name: MAX_VUS
       value: '${MAX_VUS}'
-    - name: TEST_DURATION_IN_MINUTES
+    - name: EXECUTOR_MODE
+      value: '${EXECUTOR_MODE}'
+    - name: TEST_DURATION_MINUTES
       value: '${TEST_DURATION_IN_MINUTES}'
     - name: DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS
       value: '${DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS}'
@@ -389,7 +395,8 @@ run_k6_binary_test() {
   LOAD_TEST_NAMESPACE="${LOAD_TEST_NAMESPACE}" \
   DEVWORKSPACE_LINK="${DEVWORKSPACE_LINK}" \
   MAX_VUS="${MAX_VUS}" \
-  TEST_DURATION_IN_MINUTES="${TEST_DURATION_IN_MINUTES}" \
+  EXECUTOR_MODE="${EXECUTOR_MODE}" \
+  TEST_DURATION_MINUTES="${TEST_DURATION_IN_MINUTES}" \
   DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS="${DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS}" \
   DELETE_DEVWORKSPACE_AFTER_READY="${DELETE_DEVWORKSPACE_AFTER_READY}" \
   MAX_DEVWORKSPACES="${MAX_DEVWORKSPACES}" \

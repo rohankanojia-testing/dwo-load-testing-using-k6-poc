@@ -39,6 +39,8 @@ const shouldCreateAutomountResources = (__ENV.CREATE_AUTOMOUNT_RESOURCES || 'fal
 const maxVUs = Number(__ENV.MAX_VUS || 50);
 const maxDevWorkspaces = Number(__ENV.MAX_DEVWORKSPACES || -1);
 const devWorkspaceReadyTimeout = Number(__ENV.DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS || 600);
+const loadTestDurationInMinutes = Number(__ENV.TEST_DURATION_MINUTES || 180);
+const executorMode = __ENV.EXECUTOR_MODE || 'shared-iterations'; // Options: 'shared-iterations', 'ramping-vus'
 const autoMountConfigMapName = 'dwo-load-test-automount-configmap';
 const autoMountSecretName = 'dwo-load-test-automount-secret';
 const labelType = "test-type";
@@ -51,15 +53,59 @@ const OPERATOR_POD_SELECTOR = 'app.kubernetes.io/name=devworkspace-controller';
 
 const headers = createAuthHeaders(token);
 
-export const options = {
-  scenarios: {
-    create_and_delete_devworkspaces: {
+/**
+ * Generate load test stages for ramping-vus executor
+ * @param {number} maxVUs - Maximum number of virtual users
+ * @returns {Array} Array of stage objects
+ */
+function generateLoadTestStages(maxVUs) {
+  return [
+    { duration: '2m', target: Math.floor(maxVUs * 0.25) },
+    { duration: '5m', target: Math.floor(maxVUs * 0.5) },
+    { duration: '8m', target: Math.floor(maxVUs * 0.75) },
+    { duration: '10m', target: maxVUs },
+    { duration: `${loadTestDurationInMinutes - 25}m`, target: maxVUs },
+  ];
+}
+
+/**
+ * Build k6 scenarios based on executor mode
+ * @returns {Object} Scenarios configuration
+ */
+function buildScenarios() {
+  const scenarios = {};
+
+  if (executorMode === 'ramping-vus') {
+    scenarios.create_and_delete_devworkspaces = {
+      executor: 'ramping-vus',
+      startVUs: 0,
+      stages: generateLoadTestStages(maxVUs),
+      gracefulRampDown: '1m',
+    };
+    scenarios.final_cleanup = {
+      executor: 'per-vu-iterations',
+      vus: 1,
+      iterations: 1,
+      startTime: `${loadTestDurationInMinutes}m`,
+      exec: 'final_cleanup',
+    };
+  } else if (executorMode === 'shared-iterations') {
+    scenarios.create_and_delete_devworkspaces = {
       executor: 'shared-iterations',
       vus: 20,
       iterations: maxDevWorkspaces,
       maxDuration: '3h',
-    },
-  }, thresholds: {
+    };
+  } else {
+    throw new Error(`Unknown executor mode: ${executorMode}. Use 'shared-iterations' or 'ramping-vus'`);
+  }
+
+  return scenarios;
+}
+
+export const options = {
+  scenarios: buildScenarios(),
+  thresholds: {
     'checks': ['rate>0.95'],
     'devworkspace_create_duration': ['p(95)<15000'],
     'devworkspace_delete_duration': ['p(95)<10000'],
@@ -69,7 +115,8 @@ export const options = {
     'operator_mem_violations': ['count==0'],
     'operator_pod_restarts_total': ['value == 0'],
     'etcd_pod_restarts_total': ['value==0'],
-  }, insecureSkipTLSVerify: true,  // trust self-signed certs like in CRC
+  },
+  insecureSkipTLSVerify: true,  // trust self-signed certs like in CRC
 };
 
 const devworkspaceCreateDuration = new Trend('devworkspace_create_duration');
@@ -222,8 +269,14 @@ export function handleSummary(data) {
 }
 
 export function teardown(data) {
-  console.log("Running final cleanup after all DevWorkspace creation finished...");
-  final_cleanup();
+  // Only run cleanup in teardown for shared-iterations mode
+  // For ramping-vus mode, cleanup is handled by final_cleanup scenario
+  if (executorMode === 'shared-iterations') {
+    console.log("Running final cleanup after all DevWorkspace creation finished...");
+    final_cleanup();
+  } else {
+    console.log("Cleanup will be handled by final_cleanup scenario");
+  }
 }
 
 function createNewDevWorkspace(namespace, vuId, iteration) {
