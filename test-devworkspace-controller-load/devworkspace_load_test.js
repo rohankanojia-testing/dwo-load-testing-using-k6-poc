@@ -168,7 +168,11 @@ export function setup() {
 }
 
 export default function () {
-  if (maxDevWorkspaces > 0) {
+  const vuId = __VU;
+  const iteration = __ITER;
+
+  // Only check DevWorkspace count every 20th iteration to reduce API calls
+  if (maxDevWorkspaces > 0 && iteration % 20 === 0) {
     const { error, devWorkspaces } = getDevWorkspacesFromApiServer(apiServer, loadTestNamespace, headers, useSeparateNamespaces);
     if (error) {
       return;
@@ -188,12 +192,10 @@ export default function () {
           { abortOnFail: false }
       );
     } else if (totalDevWorkspaces >= maxDevWorkspaces) {
-      // stop further creation, but don’t abort the test
+      // stop further creation, but don't abort the test
       return;
     }
   }
-  const vuId = __VU;
-  const iteration = __ITER;
   const crName = `dw-test-${vuId}-${iteration}`;
   const namespace = useSeparateNamespaces
       ? `load-test-ns-${__VU}-${__ITER}`
