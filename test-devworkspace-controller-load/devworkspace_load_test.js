@@ -39,6 +39,7 @@ const shouldCreateAutomountResources = (__ENV.CREATE_AUTOMOUNT_RESOURCES || 'fal
 const maxVUs = Number(__ENV.MAX_VUS || 50);
 const maxDevWorkspaces = Number(__ENV.MAX_DEVWORKSPACES || -1);
 const devWorkspaceReadyTimeout = Number(__ENV.DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS || 600);
+const pollWaitInterval = 10; // seconds between DevWorkspace status polls
 const loadTestDurationInMinutes = Number(__ENV.TEST_DURATION_MINUTES || 180);
 const executorMode = __ENV.EXECUTOR_MODE || 'shared-iterations'; // Options: 'shared-iterations', 'ramping-vus'
 const autoMountConfigMapName = 'dwo-load-test-automount-configmap';
@@ -290,14 +291,13 @@ function waitUntilDevWorkspaceIsReady(vuId, crName, namespace) {
   const dwUrl = `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${namespace}/devworkspaces/${crName}`;
   const readyStart = Date.now();
   let isReady = false;
+  let isFailed = false;
   let attempts = 0;
   let lastPhase = '';
-  const pollWaitInterval = 5;
   const maxAttempts = devWorkspaceReadyTimeout / pollWaitInterval;
-  let res = {};
 
-  while (!isReady && attempts < maxAttempts) {
-    res = http.get(`${dwUrl}`, {headers});
+  while (!isReady && !isFailed && attempts < maxAttempts) {
+    const res = http.get(`${dwUrl}`, {headers});
 
     if (res.status === 200) {
       try {
@@ -308,7 +308,7 @@ function waitUntilDevWorkspaceIsReady(vuId, crName, namespace) {
           isReady = true;
           break;
         } else if (phase === 'Failing' || phase === 'Failed' || phase === 'Error') {
-          isReady = false;
+          isFailed = true;
           break;
         }
       } catch (e) {
@@ -322,22 +322,24 @@ function waitUntilDevWorkspaceIsReady(vuId, crName, namespace) {
     attempts++;
   }
 
-  if (!isReady && attempts >= maxAttempts) {
+  if (!isReady && !isFailed && attempts >= maxAttempts) {
     console.error(
         `GET [VU ${vuId}] Timed out waiting for DevWorkspace '${crName}' in namespace '${namespace}' ` +
         `after ${attempts} attempts (${devWorkspaceReadyTimeout}s). Last known phase: '${lastPhase}'`
     );
   }
 
-  if (res.status === 200) {
-    if (isReady) {
-      devworkspaceReady.add(1);
-      devworkspaceReadyDuration.add(Date.now() - readyStart);
-      devworkspaceStarting.add(-1); // DevWorkspace left Starting phase (now Ready)
-    } else {
-      devworkspaceReadyFailed.add(1);
-      devworkspaceStarting.add(-1); // DevWorkspace left Starting phase (Failed or timed out)
-    }
+  // Record metrics based on final state, not on API call success
+  if (isReady) {
+    devworkspaceReady.add(1);
+    devworkspaceReadyDuration.add(Date.now() - readyStart);
+    devworkspaceStarting.add(-1); // DevWorkspace left Starting phase (now Ready)
+  } else if (isFailed) {
+    devworkspaceReadyFailed.add(1);
+    devworkspaceStarting.add(-1); // DevWorkspace left Starting phase (Failed)
+  } else {
+    // Timed out or interrupted - still in Starting phase, don't decrement
+    devworkspaceReadyFailed.add(1);
   }
 }
 
