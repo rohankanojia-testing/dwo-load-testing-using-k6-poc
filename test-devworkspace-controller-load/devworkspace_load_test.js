@@ -16,7 +16,7 @@
 import http from 'k6/http';
 import {check, sleep} from 'k6';
 import {Trend, Counter, Gauge} from 'k6/metrics';
-import { test } from 'k6/execution';
+import { test, scenario } from 'k6/execution';
 import {htmlReport} from "https://raw.githubusercontent.com/benc-uk/k6-reporter/main/dist/bundle.js";
 import {textSummary} from "https://jslib.k6.io/k6-summary/0.0.1/index.js";
 import {
@@ -171,28 +171,12 @@ export default function () {
   const vuId = __VU;
   const iteration = __ITER;
 
-  // Only check DevWorkspace count every 20th iteration to reduce API calls
-  if (maxDevWorkspaces > 0 && iteration % 20 === 0) {
-    const { error, devWorkspaces } = getDevWorkspacesFromApiServer(apiServer, loadTestNamespace, headers, useSeparateNamespaces);
-    if (error) {
-      return;
-    }
-    const totalDevWorkspaces = devWorkspaces.length;
-
-    const runningDevWorkspaces = devWorkspaces.filter(
-        (dw) => dw.status && dw.status.phase === 'Running'
-    ).length;
-    const startingDevWorkspaces = devWorkspaces.filter(
-        (dw) => dw.status && dw.status.phase === 'Starting'
-    ).length;
-
-    if (startingDevWorkspaces === 0 && runningDevWorkspaces >= maxDevWorkspaces) {
-      test.abort(
-          'Max concurrent DevWorkspaces target achieved (no Starting workspaces), stopping test gracefully',
-          { abortOnFail: false }
-      );
-    } else if (totalDevWorkspaces >= maxDevWorkspaces) {
-      // stop further creation, but don't abort the test
+  // In ramping-vus mode, use iteration count to enforce max limit
+  // This is much more efficient than querying the API every time
+  if (maxDevWorkspaces > 0 && executorMode === 'ramping-vus') {
+    const totalIterations = scenario.iterationInTest;
+    if (totalIterations >= maxDevWorkspaces) {
+      // Max iterations reached, skip this creation
       return;
     }
   }
