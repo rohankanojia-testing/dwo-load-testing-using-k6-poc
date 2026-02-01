@@ -124,6 +124,7 @@ const devworkspaceReady = new Counter('devworkspace_ready');
 const devworkspaceDeleteDuration = new Trend('devworkspace_delete_duration');
 const devworkspaceReadyDuration = new Trend('devworkspace_ready_duration');
 const devworkspaceReadyFailed = new Counter('devworkspace_ready_failed');
+const devworkspaceStarting = new Counter('devworkspace_starting'); // Tracks current count in Starting phase (increments on create, decrements on ready/failed)
 const operatorCpu = new Trend('average_operator_cpu'); // in milli cores
 const operatorMemory = new Trend('average_operator_memory'); // in Mi
 const etcdCpu = new Trend('average_etcd_cpu'); // in milli cores
@@ -225,6 +226,7 @@ export function handleSummary(data) {
     'devworkspace_ready_duration',
     'devworkspace_ready',
     'devworkspace_ready_failed',
+    'devworkspace_starting',
     'operator_cpu_violations',
     'operator_mem_violations',
     'average_operator_cpu',
@@ -280,6 +282,7 @@ function createNewDevWorkspace(namespace, vuId, iteration) {
   }
   devworkspaceCreateDuration.add(Date.now() - createStart);
   devworkspacesCreated.add(1);
+  devworkspaceStarting.add(1); // Track DevWorkspace entering Starting phase
   return true;
 }
 
@@ -330,8 +333,10 @@ function waitUntilDevWorkspaceIsReady(vuId, crName, namespace) {
     if (isReady) {
       devworkspaceReady.add(1);
       devworkspaceReadyDuration.add(Date.now() - readyStart);
+      devworkspaceStarting.add(-1); // DevWorkspace left Starting phase (now Ready)
     } else {
       devworkspaceReadyFailed.add(1);
+      devworkspaceStarting.add(-1); // DevWorkspace left Starting phase (Failed or timed out)
     }
   }
 }
