@@ -470,13 +470,14 @@ add_test() {
     local TEST_NAME="${MAX}_${MODE_NAME}_${DURATION}m"
 
     # Construct ARGS automatically
+    local TIMEOUT_SECONDS=$((DURATION * 60))
     local ARGS="--mode binary \
                 --max-vus 300 \
                 --create-automount-resources true \
                 --max-devworkspaces $MAX \
                 --delete-devworkspace-after-ready false \
                 --separate-namespaces $SEPARATE \
-                --devworkspace-ready-timeout-seconds 3600 \
+                --devworkspace-ready-timeout-seconds $TIMEOUT_SECONDS \
                 --test-duration-minutes $DURATION \
                 $EXTRA_ARGS"
 
