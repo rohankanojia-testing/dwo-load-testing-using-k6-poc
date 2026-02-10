@@ -13,7 +13,7 @@
 # ENVIRONMENT VARIABLES:
 #   OUTPUT_DIR                - Base directory for outputs (default: outputs/)
 #   SKIP_CLEANUP              - Skip cleanup steps (default: false)
-#   RESTART_OPERATOR          - Restart DWO operator after cleanup (default: false)
+#   RESTART_OPERATOR          - Restart DWO operator after cleanup (default: true)
 #   TEST_TIMEOUT              - Max time per test in seconds (default: 14400 = 4h)
 #   CLEANUP_MAX_WAIT          - Max time for cleanup in seconds (default: 7200 = 2h)
 #
@@ -24,8 +24,8 @@
 #   # Run without cleanup (for debugging)
 #   SKIP_CLEANUP=true ./scripts/run_all_loadtests.sh
 #
-#   # Run with operator restart after each cleanup
-#   RESTART_OPERATOR=true ./scripts/run_all_loadtests.sh
+#   # Run without operator restart (restart is enabled by default)
+#   RESTART_OPERATOR=false ./scripts/run_all_loadtests.sh
 #
 #   # Run with shorter test timeout
 #   TEST_TIMEOUT=3600 ./scripts/run_all_loadtests.sh
@@ -49,7 +49,7 @@ POLL_INTERVAL=30
 CLEANUP_MAX_WAIT=7200   # 2 hours for cleanup
 TEST_TIMEOUT=14400      # 4 hours per test
 SKIP_CLEANUP="${SKIP_CLEANUP:-false}"
-RESTART_OPERATOR="${RESTART_OPERATOR:-false}"
+RESTART_OPERATOR="${RESTART_OPERATOR:-true}"
 
 # Colors for output
 RED='\033[0;31m'
