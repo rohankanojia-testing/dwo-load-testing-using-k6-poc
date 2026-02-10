@@ -22,21 +22,21 @@ export function doHttpPostDevWorkspaceCreate(apiServer, headers, namespace, dwMa
     const baseUrl = `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${namespace}/devworkspaces`;
 
     const payload = JSON.stringify(dwManifest);
-    return http.post(baseUrl, payload, {headers});
+    return http.post(baseUrl, payload, {headers, timeout: '120s'});
 }
 
 export function doHttpPatchDevWorkspaceUpdate(apiServer, headers, namespace, dwManifest, dwName) {
     const baseUrl = `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${namespace}/devworkspaces/${dwName}`;
 
     const payload = JSON.stringify(dwManifest);
-    return http.patch(baseUrl, payload, {headers});
+    return http.patch(baseUrl, payload, {headers, timeout: '120s'});
 }
 
 export function doHttpPatchPodDevWorkspaceUpdate(apiServer, headers, namespace, dwManifest, pod) {
     const baseUrl = `${apiServer}/api/v1/namespaces/${namespace}/pods/${pod.metadata?.name}`;
 
     const payload = JSON.stringify(dwManifest);
-    return http.patch(baseUrl, payload, {headers});
+    return http.patch(baseUrl, payload, {headers, timeout: '120s'});
 }
 
 /**

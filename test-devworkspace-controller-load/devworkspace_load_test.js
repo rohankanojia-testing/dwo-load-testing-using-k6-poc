@@ -338,8 +338,9 @@ function waitUntilDevWorkspaceIsReady(vuId, crName, namespace) {
     devworkspaceReadyFailed.add(1);
     devworkspaceStarting.add(-1); // DevWorkspace left Starting phase (Failed)
   } else {
-    // Timed out or interrupted - still in Starting phase, don't decrement
-    devworkspaceReadyFailed.add(1);
+    // Timed out or interrupted - decrement starting counter but don't count as failed
+    // These workspaces may still become ready after the test ends
+    devworkspaceStarting.add(-1);
   }
 }
 
