@@ -13,7 +13,7 @@
 # ENVIRONMENT VARIABLES:
 #   OUTPUT_DIR                - Base directory for outputs (default: outputs/)
 #   SKIP_CLEANUP              - Skip cleanup steps (default: false)
-#   REINSTALL_OPERATOR        - Reinstall DWO operator after cleanup (default: false)
+#   RESTART_OPERATOR          - Restart DWO operator after cleanup (default: false)
 #   TEST_TIMEOUT              - Max time per test in seconds (default: 14400 = 4h)
 #   CLEANUP_MAX_WAIT          - Max time for cleanup in seconds (default: 7200 = 2h)
 #
@@ -24,8 +24,8 @@
 #   # Run without cleanup (for debugging)
 #   SKIP_CLEANUP=true ./scripts/run_all_loadtests.sh
 #
-#   # Run with operator reinstallation after each cleanup
-#   REINSTALL_OPERATOR=true ./scripts/run_all_loadtests.sh
+#   # Run with operator restart after each cleanup
+#   RESTART_OPERATOR=true ./scripts/run_all_loadtests.sh
 #
 #   # Run with shorter test timeout
 #   TEST_TIMEOUT=3600 ./scripts/run_all_loadtests.sh
@@ -49,7 +49,7 @@ POLL_INTERVAL=30
 CLEANUP_MAX_WAIT=7200   # 2 hours for cleanup
 TEST_TIMEOUT=14400      # 4 hours per test
 SKIP_CLEANUP="${SKIP_CLEANUP:-false}"
-REINSTALL_OPERATOR="${REINSTALL_OPERATOR:-false}"
+RESTART_OPERATOR="${RESTART_OPERATOR:-false}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -126,7 +126,7 @@ EOREADME
 echo "Output directory: $RUN_DIR"
 echo "Logs directory: $LOG_DIR"
 echo "Skip cleanup: $SKIP_CLEANUP"
-echo "Reinstall operator: $REINSTALL_OPERATOR"
+echo "Restart operator: $RESTART_OPERATOR"
 echo "Test timeout: ${TEST_TIMEOUT}s"
 echo "Cleanup timeout: ${CLEANUP_MAX_WAIT}s"
 echo "--------------------------------------------------------"
@@ -220,14 +220,14 @@ wait_for_cleanup() {
             echo -e "${GREEN}Cleanup complete after ${elapsed}s (${cleanup_attempt} attempts)${NC}"
             echo "--------------------------------------------------------"
 
-            # Reinstall operator if requested
-            if [ "$REINSTALL_OPERATOR" == "true" ]; then
+            # Restart operator if requested
+            if [ "$RESTART_OPERATOR" == "true" ]; then
                 echo ""
-                echo -e "${BLUE}Reinstalling DevWorkspace Operator...${NC}"
-                if bash "$(dirname "$0")/reinstall_dwo_operator.sh"; then
-                    echo -e "${GREEN}Operator reinstallation successful${NC}"
+                echo -e "${BLUE}Restarting DevWorkspace Operator...${NC}"
+                if bash "$(dirname "$0")/restart_dwo_operator.sh"; then
+                    echo -e "${GREEN}Operator restart successful${NC}"
                 else
-                    echo -e "${RED}ERROR: Operator reinstallation failed${NC}"
+                    echo -e "${RED}ERROR: Operator restart failed${NC}"
                     return 1
                 fi
                 echo "--------------------------------------------------------"
