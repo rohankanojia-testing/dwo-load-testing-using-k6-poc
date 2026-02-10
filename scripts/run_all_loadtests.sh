@@ -60,9 +60,11 @@ NC='\033[0m' # No Color
 
 # Test tracking
 declare -a TEST_RESULTS
+declare -a TEST_PLAN
 TEST_COUNT=0
 PASSED_COUNT=0
 FAILED_COUNT=0
+PLANNING_MODE=true
 
 echo "========================================================"
 echo "Starting load test suite at $(date)"
@@ -469,6 +471,12 @@ add_test() {
     # Auto-generate test name
     local TEST_NAME="${MAX}_${MODE_NAME}_${DURATION}m"
 
+    # In planning mode, just add to plan
+    if [ "$PLANNING_MODE" == "true" ]; then
+        TEST_PLAN+=("$TEST_NAME|$MAX DevWorkspaces|$MODE namespace|${DURATION} minutes")
+        return 0
+    fi
+
     # Construct ARGS automatically
     local TIMEOUT_SECONDS=$((DURATION * 60))
     local ARGS="--mode binary \
@@ -497,20 +505,6 @@ add_custom_test() {
 #############################################
 #           DEFINE TEST SUITE HERE          #
 #############################################
-
-# Array to store test plan for preview
-declare -a TEST_PLAN
-
-# Modified add_test to support test planning
-add_test_to_plan() {
-    local MAX=$1
-    local MODE=$2
-    local DURATION=$3
-    local EXTRA_ARGS="${4:-}"
-
-    local TEST_NAME="${MAX}_${MODE}_ns_${DURATION}m"
-    TEST_PLAN+=("$TEST_NAME|$MAX DevWorkspaces|$MODE namespace|${DURATION} minutes")
-}
 
 # Show test plan before starting
 show_test_plan() {
@@ -550,16 +544,26 @@ echo "$(date)" > "$RUN_DIR/test_suite.log"
 #
 # For completely custom tests:
 #   add_custom_test "my-test" "--mode binary --max-vus 100 --max-devworkspaces 500"
+#
+# NOTE: Define your tests ONCE in the run_tests() function below.
+#       They will be collected for the plan preview, then executed.
 
-# Build test plan (for preview)
-add_test_to_plan 1000 single 40
-add_test_to_plan 1500 single 40
-add_test_to_plan 2000 single 40
-add_test_to_plan 2500 single 90
-add_test_to_plan 1000 separate 40
-add_test_to_plan 1500 separate 60
-add_test_to_plan 2000 separate 90
-add_test_to_plan 2500 separate 90
+# Function to define all tests
+run_tests() {
+    add_test 1000 single 40
+    add_test 1500 single 40
+    add_test 2000 single 40
+    add_test 2500 single 90
+
+    add_test 1000 separate 40
+    add_test 1500 separate 60
+    add_test 2000 separate 90
+    add_test 2500 separate 90
+}
+
+# First pass: collect test plan
+PLANNING_MODE=true
+run_tests
 
 # Show test plan
 show_test_plan
@@ -573,16 +577,9 @@ done
 echo ""
 echo ""
 
-# Execute the actual tests
-add_test 1000 single 40
-add_test 1500 single 40
-add_test 2000 single 40
-add_test 2500 single 90
-
-add_test 1000 separate 40
-add_test 1500 separate 60
-add_test 2000 separate 90
-add_test 2500 separate 90
+# Second pass: execute tests
+PLANNING_MODE=false
+run_tests
 
 # Calculate total suite duration
 SUITE_END=$(date +%s)
