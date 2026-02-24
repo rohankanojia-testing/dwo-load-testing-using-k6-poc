@@ -8,7 +8,11 @@
 # between tests and generates comprehensive reports.
 #
 # USAGE:
-#   ./scripts/run_all_loadtests.sh
+#   ./scripts/run_all_loadtests.sh [TEST_PLAN_FILE]
+#
+# ARGUMENTS:
+#   TEST_PLAN_FILE            - Optional JSON test plan file
+#                               If not provided, uses default test plan defined in script
 #
 # ENVIRONMENT VARIABLES:
 #   OUTPUT_DIR                - Base directory for outputs (default: outputs/)
@@ -18,6 +22,12 @@
 #   CLEANUP_MAX_WAIT          - Max time for cleanup in seconds (default: 7200 = 2h)
 #
 # EXAMPLES:
+#   # Run with default test plan (defined in script)
+#   ./scripts/run_all_loadtests.sh
+#
+#   # Run with custom test plan from JSON file
+#   ./scripts/run_all_loadtests.sh test-plans/controller-test-plan.json
+#
 #   # Run with custom output directory
 #   OUTPUT_DIR=./my-results ./scripts/run_all_loadtests.sh
 #
@@ -40,6 +50,8 @@
 set -o pipefail
 
 # --- Configuration ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTPUT_DIR="${OUTPUT_DIR:-outputs}"
 RUN_DIR="$OUTPUT_DIR/run_$TIMESTAMP"
@@ -50,6 +62,37 @@ CLEANUP_MAX_WAIT=7200   # 2 hours for cleanup
 TEST_TIMEOUT=14400      # 4 hours per test
 SKIP_CLEANUP="${SKIP_CLEANUP:-false}"
 RESTART_OPERATOR="${RESTART_OPERATOR:-true}"
+
+# Test plan file (optional)
+TEST_PLAN_FILE="${1:-}"
+USE_JSON_PLAN=false
+
+# Check if JSON plan file is provided
+if [ -n "$TEST_PLAN_FILE" ]; then
+    USE_JSON_PLAN=true
+
+    # Check for jq
+    if ! command -v jq &> /dev/null; then
+        echo "ERROR: jq is required for JSON test plans but not installed."
+        echo "Install it with: brew install jq (macOS) or apt-get install jq (Linux)"
+        echo ""
+        echo "Alternatively, run without arguments to use the default hardcoded test plan:"
+        echo "  ./scripts/run_all_loadtests.sh"
+        exit 1
+    fi
+
+    # Validate test plan file exists
+    if [ ! -f "$TEST_PLAN_FILE" ]; then
+        echo "ERROR: Test plan file not found: $TEST_PLAN_FILE"
+        exit 1
+    fi
+
+    # Validate JSON
+    if ! jq empty "$TEST_PLAN_FILE" 2>/dev/null; then
+        echo "ERROR: Invalid JSON in test plan file: $TEST_PLAN_FILE"
+        exit 1
+    fi
+fi
 
 # Colors for output
 RED='\033[0;31m'
@@ -69,6 +112,14 @@ PLANNING_MODE=true
 echo "========================================================"
 echo "Starting load test suite at $(date)"
 echo "========================================================"
+
+if [ "$USE_JSON_PLAN" == "true" ]; then
+    echo "Mode: JSON test plan"
+    echo "Test plan file: $TEST_PLAN_FILE"
+else
+    echo "Mode: Default hardcoded test plan"
+fi
+
 mkdir -p "$LOG_DIR"
 mkdir -p "$OUTPUT_DIR"
 
@@ -413,7 +464,12 @@ generate_summary_report() {
         echo "========================================================"
         echo "Load Test Suite Summary"
         echo "========================================================"
-        echo "Started: $(head -1 "$LOG_DIR/../test_suite.log" 2>/dev/null | grep -oP '\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}' || echo 'N/A')"
+        if [ "$USE_JSON_PLAN" == "true" ]; then
+            echo "Test Plan: $TEST_PLAN_FILE"
+        else
+            echo "Test Plan: Default (hardcoded)"
+        fi
+        echo "Started: $(head -1 "$RUN_DIR/test_suite.log" 2>/dev/null || echo 'N/A')"
         echo "Completed: $(date)"
         echo "Output Directory: $RUN_DIR"
         echo ""
@@ -503,6 +559,130 @@ add_custom_test() {
 
 
 #############################################
+#    LOAD TEST PLAN FROM JSON FILE         #
+#############################################
+
+# Load tests from JSON file and populate TEST_PLAN array
+load_test_plan_from_json() {
+    if [ "$USE_JSON_PLAN" != "true" ]; then
+        return
+    fi
+
+    echo "Loading test plan from: $TEST_PLAN_FILE"
+
+    # Load standard tests
+    local test_count=$(jq '.tests | length' "$TEST_PLAN_FILE")
+    echo "Found $test_count standard tests in plan"
+
+    for ((i=0; i<test_count; i++)); do
+        local enabled=$(jq -r ".tests[$i].enabled" "$TEST_PLAN_FILE")
+
+        if [ "$enabled" != "true" ]; then
+            continue
+        fi
+
+        local max=$(jq -r ".tests[$i].max_devworkspaces" "$TEST_PLAN_FILE")
+        local mode=$(jq -r ".tests[$i].mode" "$TEST_PLAN_FILE")
+        local duration=$(jq -r ".tests[$i].duration_minutes" "$TEST_PLAN_FILE")
+
+        # Add to plan
+        TEST_PLAN+=("${max}_${mode}_${duration}m|$max DevWorkspaces|$mode namespace|${duration} minutes")
+    done
+
+    # Load custom tests
+    local custom_count=$(jq '.custom_tests | length' "$TEST_PLAN_FILE" 2>/dev/null || echo "0")
+    if [ "$custom_count" -gt 0 ]; then
+        echo "Found $custom_count custom tests in plan"
+
+        for ((i=0; i<custom_count; i++)); do
+            local enabled=$(jq -r ".custom_tests[$i].enabled" "$TEST_PLAN_FILE")
+
+            if [ "$enabled" != "true" ]; then
+                continue
+            fi
+
+            local name=$(jq -r ".custom_tests[$i].name" "$TEST_PLAN_FILE")
+
+            # Add to plan
+            TEST_PLAN+=("$name|Custom|Custom|Custom")
+        done
+    fi
+
+    if [ ${#TEST_PLAN[@]} -eq 0 ]; then
+        echo "WARNING: No enabled tests found in test plan"
+        echo "Please enable at least one test in $TEST_PLAN_FILE"
+        exit 1
+    fi
+
+    echo "Loaded ${#TEST_PLAN[@]} enabled tests"
+}
+
+# Execute tests from JSON file
+execute_tests_from_json() {
+    if [ "$USE_JSON_PLAN" != "true" ]; then
+        return
+    fi
+
+    # Execute standard tests
+    local test_count=$(jq '.tests | length' "$TEST_PLAN_FILE")
+
+    for ((i=0; i<test_count; i++)); do
+        local enabled=$(jq -r ".tests[$i].enabled" "$TEST_PLAN_FILE")
+
+        if [ "$enabled" != "true" ]; then
+            continue
+        fi
+
+        local max=$(jq -r ".tests[$i].max_devworkspaces" "$TEST_PLAN_FILE")
+        local mode=$(jq -r ".tests[$i].mode" "$TEST_PLAN_FILE")
+        local duration=$(jq -r ".tests[$i].duration_minutes" "$TEST_PLAN_FILE")
+
+        # Map mode to separate-namespaces flag
+        local separate
+        local mode_name
+        if [ "$mode" == "single" ]; then
+            separate="false"
+            mode_name="single_ns"
+        else
+            separate="true"
+            mode_name="separate_ns"
+        fi
+
+        # Generate test name
+        local test_name="${max}_${mode_name}_${duration}m"
+
+        # Construct ARGS
+        local timeout_seconds=$((duration * 60))
+        local args="--mode binary \
+                    --max-vus 300 \
+                    --create-automount-resources true \
+                    --max-devworkspaces $max \
+                    --delete-devworkspace-after-ready false \
+                    --separate-namespaces $separate \
+                    --devworkspace-ready-timeout-seconds $timeout_seconds \
+                    --test-duration-minutes $duration"
+
+        run_test "$test_name" "$args"
+    done
+
+    # Execute custom tests
+    local custom_count=$(jq '.custom_tests | length' "$TEST_PLAN_FILE" 2>/dev/null || echo "0")
+
+    for ((i=0; i<custom_count; i++)); do
+        local enabled=$(jq -r ".custom_tests[$i].enabled" "$TEST_PLAN_FILE")
+
+        if [ "$enabled" != "true" ]; then
+            continue
+        fi
+
+        local name=$(jq -r ".custom_tests[$i].name" "$TEST_PLAN_FILE")
+        local args=$(jq -r ".custom_tests[$i].args" "$TEST_PLAN_FILE")
+
+        run_test "$name" "$args"
+    done
+}
+
+#############################################
 #           DEFINE TEST SUITE HERE          #
 #############################################
 
@@ -547,39 +727,58 @@ echo "$(date)" > "$RUN_DIR/test_suite.log"
 #
 # NOTE: Define your tests ONCE in the run_tests() function below.
 #       They will be collected for the plan preview, then executed.
+#
+# To use a JSON test plan instead, run:
+#   ./scripts/run_all_loadtests.sh test-plans/controller-test-plan.json
 
-# Function to define all tests
+# Function to define all tests (DEFAULT TEST PLAN - used when no JSON file is provided)
 run_tests() {
-    add_test 1000 single 40
     add_test 1500 single 40
-    add_test 2000 single 40
-    add_test 2500 single 90
-
-    add_test 1000 separate 40
     add_test 1500 separate 60
-    add_test 2000 separate 90
-    add_test 2500 separate 90
 }
 
-# First pass: collect test plan
-PLANNING_MODE=true
-run_tests
+#############################################
+#              MAIN EXECUTION               #
+#############################################
 
-# Show test plan
-show_test_plan
+if [ "$USE_JSON_PLAN" == "true" ]; then
+    # JSON-based test plan
+    load_test_plan_from_json
+    show_test_plan
 
-# Wait 10 seconds before starting (gives time to cancel if needed)
-echo -e "${YELLOW}Tests will begin in 10 seconds... (Press Ctrl+C to cancel)${NC}"
-for i in {10..1}; do
-    echo -n "$i... "
-    sleep 1
-done
-echo ""
-echo ""
+    # Wait 10 seconds before starting
+    echo -e "${YELLOW}Tests will begin in 10 seconds... (Press Ctrl+C to cancel)${NC}"
+    for i in {10..1}; do
+        echo -n "$i... "
+        sleep 1
+    done
+    echo ""
+    echo ""
 
-# Second pass: execute tests
-PLANNING_MODE=false
-run_tests
+    # Execute tests from JSON
+    execute_tests_from_json
+else
+    # Hardcoded test plan (backward compatibility)
+    # First pass: collect test plan
+    PLANNING_MODE=true
+    run_tests
+
+    # Show test plan
+    show_test_plan
+
+    # Wait 10 seconds before starting
+    echo -e "${YELLOW}Tests will begin in 10 seconds... (Press Ctrl+C to cancel)${NC}"
+    for i in {10..1}; do
+        echo -n "$i... "
+        sleep 1
+    done
+    echo ""
+    echo ""
+
+    # Second pass: execute tests
+    PLANNING_MODE=false
+    run_tests
+fi
 
 # Calculate total suite duration
 SUITE_END=$(date +%s)

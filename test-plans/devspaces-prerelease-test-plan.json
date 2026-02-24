@@ -1,0 +1,20 @@
+{
+  "description": "DevSpaces Pre-Release Load Testing Plan",
+  "tests": [
+    {
+      "max_devworkspaces": 1500,
+      "mode": "single",
+      "duration_minutes": 40,
+      "enabled": true,
+      "description": "1500 DevWorkspaces in single namespace"
+    },
+    {
+      "max_devworkspaces": 1500,
+      "mode": "separate",
+      "duration_minutes": 60,
+      "enabled": true,
+      "description": "1500 DevWorkspaces in separate namespaces"
+    }
+  ],
+  "custom_tests": []
+}

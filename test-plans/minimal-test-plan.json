@@ -1,0 +1,13 @@
+{
+  "description": "Minimal Test Plan - Quick smoke test to verify everything is working",
+  "tests": [
+    {
+      "max_devworkspaces": 20,
+      "mode": "single",
+      "duration_minutes": 15,
+      "enabled": true,
+      "description": "Minimal smoke test - 20 DevWorkspaces in single namespace"
+    }
+  ],
+  "custom_tests": []
+}
