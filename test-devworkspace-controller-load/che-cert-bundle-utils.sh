@@ -5,6 +5,27 @@ log_info()    { echo -e "ℹ️  $*" >&2; }
 log_success() { echo -e "✅ $*" >&2; }
 log_error()   { echo -e "❌ $*" >&2; }
 
+detect_platform() {
+  if kubectl get csv --all-namespaces -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | grep -q devspacesoperator; then
+    echo "devspaces"
+  else
+    echo "che"
+  fi
+}
+
+get_checluster_name() {
+  local che_ns="$1"
+  local name
+  name=$(kubectl get checluster -n "${che_ns}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+  if [[ -z "${name}" ]]; then
+    log_error "No CheCluster found in namespace ${che_ns}"
+    return 1
+  fi
+
+  echo "${name}"
+}
+
 
 run_che_ca_bundle_e2e() {
   local che_ns="$1"
@@ -14,10 +35,19 @@ run_che_ca_bundle_e2e() {
   local bundle_file="${5:-custom-ca-certificates.pem}"
 
   check_namespaces "${che_ns}" "${dw_ns}"
+
+  local platform
+  platform=$(detect_platform "${che_ns}")
+  log_info "Detected platform: ${platform}"
+
+  local checluster_name
+  checluster_name=$(get_checluster_name "${che_ns}")
+  log_info "CheCluster name: ${checluster_name}"
+
   generate_dummy_certs "${cert_count}" "${bundle_file}"
   create_che_ca_configmap "${che_ns}" "${bundle_file}"
-  patch_checluster_disable_pki_mount "${che_ns}"
-  restart_che "${che_ns}"
+  patch_checluster_disable_pki_mount "${che_ns}" "${checluster_name}"
+  restart_che "${che_ns}" "${platform}"
   create_devworkspace "${dw_ns}" "${dw_name}"
 
   local pod
@@ -77,10 +107,9 @@ create_che_ca_configmap() {
 
 patch_checluster_disable_pki_mount() {
   local che_ns="$1"
+  local checluster="$2"
 
   log_info "Configuring CheCluster..."
-  local checluster
-  checluster=$(kubectl get checluster -n "${che_ns}" -o jsonpath='{.items[0].metadata.name}')
 
   kubectl patch checluster "${checluster}" \
     -n "${che_ns}" \
@@ -98,12 +127,20 @@ patch_checluster_disable_pki_mount() {
 
 restart_che() {
   local che_ns="$1"
+  local platform="$2"
 
-  log_info "Restarting Che..."
-  kubectl rollout status deploy/che -n "${che_ns}" --timeout=5m
-  kubectl wait pod -n "${che_ns}" -l app=che --for=condition=Ready --timeout=5m
+  local deploy_name
+  if [[ "${platform}" == "devspaces" ]]; then
+    deploy_name="devspaces"
+  else
+    deploy_name="che"
+  fi
 
-  log_success "Che restarted"
+  log_info "Restarting ${deploy_name}..."
+  kubectl rollout status deploy/"${deploy_name}" -n "${che_ns}" --timeout=5m
+  kubectl wait pod -n "${che_ns}" -l app="${deploy_name}" --for=condition=Ready --timeout=5m
+
+  log_success "${deploy_name} restarted"
 }
 
 create_devworkspace() {

@@ -1,11 +1,16 @@
 provision_che_workspace_namespace() {
   local LOAD_TEST_NAMESPACE="$1"
   local CHE_NAMESPACE="$2"
-  local CHE_CLUSTER_NAME="$3"
 
   if [[ -z "${LOAD_TEST_NAMESPACE}" ]]; then
     echo "ERROR: LOAD_TEST_NAMESPACE argument is required"
-    echo "Usage: provision_che_workspace_namespace <namespace>"
+    echo "Usage: provision_che_workspace_namespace <namespace> <che-namespace>"
+    return 1
+  fi
+
+  if [[ -z "${CHE_NAMESPACE}" ]]; then
+    echo "ERROR: CHE_NAMESPACE argument is required"
+    echo "Usage: provision_che_workspace_namespace <namespace> <che-namespace>"
     return 1
   fi
 
@@ -17,9 +22,18 @@ provision_che_workspace_namespace() {
   local USERNAME
   USERNAME="$(oc whoami)"
 
+  local CHE_CLUSTER_NAME
+  CHE_CLUSTER_NAME=$(oc get checluster -n "${CHE_NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+  if [[ -z "${CHE_CLUSTER_NAME}" ]]; then
+    echo "ERROR: No CheCluster found in namespace ${CHE_NAMESPACE}"
+    return 1
+  fi
+
   echo "Provisioning Che workspace namespace"
-  echo "  User      : ${USERNAME}"
-  echo "  Namespace : ${LOAD_TEST_NAMESPACE}"
+  echo "  User        : ${USERNAME}"
+  echo "  Namespace   : ${LOAD_TEST_NAMESPACE}"
+  echo "  CheCluster  : ${CHE_CLUSTER_NAME}"
 
   oc patch checluster "${CHE_CLUSTER_NAME}" \
     -n "${CHE_NAMESPACE}" \

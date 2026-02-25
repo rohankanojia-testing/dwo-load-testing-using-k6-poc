@@ -28,8 +28,8 @@ TEST_DURATION_IN_MINUTES="25"
 MIN_KUBECTL_VERSION="1.24.0"
 MIN_CURL_VERSION="7.0.0"
 MIN_K6_VERSION="1.1.0"
-CHE_NAMESPACE="eclipse-che"
-CHE_CLUSTER_NAME="eclipse-che"
+CHE_NAMESPACE=""  # Auto-detected based on platform
+CHE_CLUSTER_NAME=""  # Auto-discovered from cluster
 TEST_CERTIFICATES_COUNT="500"
 
 # ----------- Main Execution Flow -----------
@@ -39,7 +39,8 @@ main() {
   if [[ "$RUN_WITH_ECLIPSE_CHE" == "false" ]]; then
     create_namespace
   else
-    provision_che_workspace_namespace "$LOAD_TEST_NAMESPACE" "$CHE_NAMESPACE" "$CHE_CLUSTER_NAME"
+    detect_che_namespace
+    provision_che_workspace_namespace "$LOAD_TEST_NAMESPACE" "$CHE_NAMESPACE"
     run_che_ca_bundle_e2e "$CHE_NAMESPACE" "$LOAD_TEST_NAMESPACE" "test-devworkspace" "$TEST_CERTIFICATES_COUNT"
   fi
   create_rbac
@@ -64,6 +65,24 @@ main() {
 }
 
 # ----------- Helper Functions -----------
+detect_che_namespace() {
+  if [[ -z "$CHE_NAMESPACE" ]]; then
+    echo "🔍 Auto-detecting CheCluster namespace..."
+
+    # Try to find CheCluster in any namespace
+    local checluster_ns
+    checluster_ns=$(kubectl get checluster --all-namespaces -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null || true)
+
+    if [[ -n "$checluster_ns" ]]; then
+      CHE_NAMESPACE="$checluster_ns"
+      echo "✅ Found CheCluster in namespace: $CHE_NAMESPACE"
+    else
+      echo "❌ No CheCluster found in any namespace. Please install Eclipse Che/Dev Spaces first."
+      exit 1
+    fi
+  fi
+}
+
 print_help() {
   cat <<EOF
 Usage: $0 [options]
@@ -82,8 +101,8 @@ Options:
   --logs-dir <string>                         Directory name where DevWorkspace and event logs would be dumped
   --test-duration-minutes <int>               Duration in minutes for which to run load tests (default: 25 minutes)
   --run-with-eclipse-che <true|false>         Whether these tests are supposed to be run with Eclipse Che (If yes additional certificates are mounted)
-  --che-cluster-name <string>                 Applicable if running on Eclipse Che, defaults to 'eclipse-che'
-  --che-namespace <string>                    Applicable if running on Eclipse Che, defaults to 'eclipse-che'
+  --che-cluster-name <string>                 CheCluster name (auto-discovered if not specified)
+  --che-namespace <string>                    CheCluster namespace (auto-detected: openshift-operators on OpenShift, eclipse-che otherwise)
   -h, --help                                  Show this help message
 EOF
 }
@@ -238,7 +257,14 @@ log_failed_devworkspaces() {
 
 stop_background_watchers() {
   echo "🛑 Stopping background watchers..."
-  kill "$PID_EVENTS_WATCH" "$PID_DW_WATCH" "$PID_FAILED_DW_POLL" 2>/dev/null || true
+  local pids=()
+  [[ -n "${PID_EVENTS_WATCH:-}" ]] && pids+=("$PID_EVENTS_WATCH")
+  [[ -n "${PID_DW_WATCH:-}" ]] && pids+=("$PID_DW_WATCH")
+  [[ -n "${PID_FAILED_DW_POLL:-}" ]] && pids+=("$PID_FAILED_DW_POLL")
+
+  if [[ ${#pids[@]} -gt 0 ]]; then
+    kill "${pids[@]}" 2>/dev/null || true
+  fi
 }
 
 install_k6_operator() {
