@@ -30,7 +30,7 @@ MIN_CURL_VERSION="7.0.0"
 MIN_K6_VERSION="1.1.0"
 CHE_NAMESPACE=""  # Auto-detected based on platform
 CHE_CLUSTER_NAME=""  # Auto-discovered from cluster
-TEST_CERTIFICATES_COUNT="1000"
+TEST_CERTIFICATES_COUNT="930" # Kubernetes does not allow ConfigMap more than 1048576 bytes
 
 # ----------- Main Execution Flow -----------
 main() {

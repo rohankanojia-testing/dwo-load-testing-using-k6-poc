@@ -69,18 +69,20 @@ check_namespaces() {
 generate_dummy_certs() {
   local cert_count="$1"
   local bundle_file="$2"
+  local cert_dir="temp-certs"
 
   log_info "Generating ${cert_count} dummy CA certificates..."
+  mkdir -p "${cert_dir}"
   rm -f "${bundle_file}"
 
   for i in $(seq 1 "${cert_count}"); do
     openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
       -subj "/CN=dummy-ca-${i}" \
-      -keyout "dummy-ca-${i}.key" \
-      -out "dummy-ca-${i}.pem" \
+      -keyout "${cert_dir}/dummy-ca-${i}.key" \
+      -out "${cert_dir}/dummy-ca-${i}.pem" \
       >/dev/null 2>&1
 
-    cat "dummy-ca-${i}.pem" >> "${bundle_file}"
+    cat "${cert_dir}/dummy-ca-${i}.pem" >> "${bundle_file}"
   done
 
   log_success "Created CA bundle: $(du -h "${bundle_file}" | cut -f1)"
@@ -136,11 +138,12 @@ restart_che() {
     deploy_name="che"
   fi
 
-  log_info "Restarting ${deploy_name}..."
+  log_info "Restarting ${deploy_name} to pick up new CA certificates..."
+  kubectl rollout restart deploy/"${deploy_name}" -n "${che_ns}"
   kubectl rollout status deploy/"${deploy_name}" -n "${che_ns}" --timeout=5m
   kubectl wait pod -n "${che_ns}" -l app="${deploy_name}" --for=condition=Ready --timeout=5m
 
-  log_success "${deploy_name} restarted"
+  log_success "${deploy_name} restarted successfully"
 }
 
 create_devworkspace() {
@@ -224,5 +227,6 @@ cleanup_resources() {
 
   log_info "Cleaning up..."
   kubectl delete dw "${dw_name}" -n "${dw_ns}" --ignore-not-found --wait=false
-  rm -f *.pem *.key
+  rm -rf temp-certs/
+  rm -f custom-ca-certificates.pem
 }
