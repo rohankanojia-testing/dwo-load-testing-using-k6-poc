@@ -212,6 +212,83 @@ The webhook server tests track the following metrics:
 - **Console Output**: Real-time test progress and summary with metrics
 - **Test Results**: Metrics are displayed in the console at the end of the test run
 
+## Backup/Restore Load Tests
+
+The **Backup/Restore Load Tests** validate the DevWorkspace Operator's backup feature ([CRW-9437](https://issues.redhat.com/browse/CRW-9437)) under high load conditions.
+
+![DevWorkspace Backup Load Test Flow](./images/dwo-backup-load-test-flow.png)
+
+**Key Features:**
+- Runs as a **post-operation hook** after normal load testing
+- Creates configurable number of workspaces (50, 500, 2000+), then stops them to trigger backups
+- Monitors backup Job creation, completion, and resource usage
+- Tests both correct and incorrect DWOC configurations
+- Each workspace in separate namespace (simulates multiple users)
+
+### Running Backup/Restore Tests
+
+**Quick Start (Smoke Test - 50 workspaces):**
+```bash
+# 1. Create registry secret
+kubectl create secret docker-registry quay-push-secret \
+  --docker-server=quay.io \
+  --docker-username=<your-username> \
+  --docker-password=<your-password> \
+  -n openshift-operators
+
+kubectl label secret quay-push-secret \
+  controller.devfile.io/watch-secret=true \
+  -n openshift-operators
+
+# 2. Update test plan with your registry path
+sed -i 's/quay.io\/CHANGEME/quay.io\/yourusername/g' \
+  test-plans/backup-restore-smoke-test-plan.json
+
+# 3. Run smoke test
+./scripts/run_all_loadtests.sh test-plans/backup-restore-smoke-test-plan.json
+```
+
+**Medium Scale (500 workspaces):**
+```bash
+./scripts/run_all_loadtests.sh test-plans/backup-restore-correct-config-test-plan.json
+```
+
+**Production Scale (2000 workspaces on powerful clusters):**
+```bash
+# Enable 2000 workspace test in JSON, then:
+./scripts/run_all_loadtests.sh test-plans/backup-restore-correct-config-test-plan.json
+```
+
+### Test Scenarios
+
+**Case 1: Correct DWOC Configuration**
+- DWOC configured correctly
+- Backup Jobs should succeed
+- Expected: >95% success rate, stable resource usage
+
+**Case 2: Incorrect DWOC Configuration**
+- DWOC misconfigured (typo in registry path)
+- Multiple backup Jobs created and fail
+- Expected: High failure rate, resource spike
+
+### Backup Test Metrics
+
+- Total backup Jobs created
+- Jobs succeeded / failed
+- Success rate / failure rate
+- Average Job duration
+- Backup Job pod CPU/memory usage
+- Operator and etcd resource usage during backup operations
+
+### Backup Test Output
+
+- `<timestamp>_backup_jobs_watch.log` - Real-time backup Job events
+- `<timestamp>_backup_jobs_metrics.txt` - Job metrics summary
+- `<timestamp>_backup_jobs_failures.log` - Failed Job details
+- `<timestamp>_backup_summary.txt` - Comprehensive report
+
+**For detailed documentation, see:** [BACKUP_LOAD_TESTING.md](./test-devworkspace-controller-load/BACKUP_LOAD_TESTING.md)
+
 ## Troubleshooting
 
 - **Permission errors**: Ensure your kubeconfig has sufficient RBAC permissions

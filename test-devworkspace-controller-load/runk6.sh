@@ -32,11 +32,46 @@ MIN_K6_VERSION="1.1.0"
 CHE_NAMESPACE=""  # Auto-detected based on platform
 CHE_CLUSTER_NAME=""  # Auto-discovered from cluster
 TEST_CERTIFICATES_COUNT="750" # ConfigMap limit is 1048576 bytes; leave room for ~156 system certs
+RUN_BACKUP_TEST_HOOK="false"  # Run backup testing hook after load test completes
+DWOC_CONFIG_TYPE="correct"  # DWOC configuration type: 'correct' or 'incorrect'
+REGISTRY_PATH=""  # Registry path for backup images (e.g., quay.io/username)
+REGISTRY_SECRET=""  # Registry secret name for authentication
+BACKUP_WAIT_MINUTES="30"  # How long to wait for backup Jobs to complete
+
+# ----------- Helper Functions -----------
+configure_dwoc_for_backup_if_needed() {
+  if [[ "$RUN_BACKUP_TEST_HOOK" != "true" ]]; then
+    return 0
+  fi
+
+  echo "🔧 Configuring DWOC for backup testing (before load test)..."
+
+  # Use default secret name if not provided
+  if [[ -z "$REGISTRY_SECRET" ]]; then
+    REGISTRY_SECRET="quay-push-secret"
+  fi
+
+  # Validate required parameters
+  if [[ -z "$REGISTRY_PATH" ]]; then
+    echo "❌ --registry-path is required when --run-backup-test-hook is enabled"
+    exit 1
+  fi
+
+  # Source the configuration script
+  source test-devworkspace-controller-load/backup/configure-dwoc-backup.sh
+
+  # Configure DWOC for backup
+  configure_dwoc_for_backup "$DWOC_CONFIG_TYPE" "$REGISTRY_PATH" "$REGISTRY_SECRET"
+  echo "✅ DWOC configured for backup"
+  echo ""
+}
 
 # ----------- Main Execution Flow -----------
 main() {
   parse_arguments "$@"
   check_prerequisites
+  configure_dwoc_for_backup_if_needed
+
   if [[ "$RUN_WITH_ECLIPSE_CHE" == "false" ]]; then
     create_namespace
   else
@@ -63,6 +98,21 @@ main() {
     exit 1
   fi
   stop_background_watchers
+
+  # Run backup testing hook if enabled (AFTER load test completes)
+  if [[ "$RUN_BACKUP_TEST_HOOK" == "true" ]]; then
+    # Source and run backup tests (DWOC already configured before load test)
+    source test-devworkspace-controller-load/backup/run-backup-tests.sh
+    run_backup_tests \
+      "$LOAD_TEST_NAMESPACE" \
+      "$REGISTRY_PATH" \
+      "$DWOC_CONFIG_TYPE" \
+      "$SEPARATE_NAMESPACES" \
+      "$REGISTRY_SECRET" \
+      "$DWO_NAMESPACE" \
+      "$BACKUP_WAIT_MINUTES"
+  fi
+
   delete_namespace
 }
 
@@ -105,6 +155,11 @@ Options:
   --run-with-eclipse-che <true|false>         Whether these tests are supposed to be run with Eclipse Che (If yes additional certificates are mounted)
   --che-cluster-name <string>                 CheCluster name (auto-discovered if not specified)
   --che-namespace <string>                    CheCluster namespace (auto-detected: openshift-operators on OpenShift, eclipse-che otherwise)
+  --run-backup-test-hook <true|false>         Run backup testing hook after load test completes (default: false)
+  --dwoc-config-type <correct|incorrect>      DWOC configuration type for backup testing (default: correct)
+  --registry-path <string>                    Registry path for backup images (e.g., quay.io/username)
+  --registry-secret <string>                  Registry secret name for authentication
+  --backup-wait-minutes <int>                 How long to wait for backup Jobs to complete (default: 30)
   -h, --help                                  Show this help message
 EOF
 }
@@ -142,6 +197,16 @@ parse_arguments() {
         CHE_CLUSTER_NAME="$2"; shift 2;;
       --che-namespace)
         CHE_NAMESPACE="$2"; shift 2;;
+      --run-backup-test-hook)
+        RUN_BACKUP_TEST_HOOK="$2"; shift 2;;
+      --dwoc-config-type)
+        DWOC_CONFIG_TYPE="$2"; shift 2;;
+      --registry-path)
+        REGISTRY_PATH="$2"; shift 2;;
+      --registry-secret)
+        REGISTRY_SECRET="$2"; shift 2;;
+      --backup-wait-minutes)
+        BACKUP_WAIT_MINUTES="$2"; shift 2;;
       -h|--help)
         print_help; exit 0;;
       *)
@@ -414,26 +479,27 @@ version_gte() {
 
 run_k6_binary_test() {
   echo "🚀 Running k6 load test..."
-  IN_CLUSTER='false' \
-  KUBE_TOKEN="${KUBE_TOKEN}" \
-  KUBE_API="${KUBE_API}" \
-  DWO_NAMESPACE="${DWO_NAMESPACE}" \
-  CREATE_AUTOMOUNT_RESOURCES="${CREATE_AUTOMOUNT_RESOURCES}" \
-  SEPARATE_NAMESPACES="${SEPARATE_NAMESPACES}" \
-  LOAD_TEST_NAMESPACE="${LOAD_TEST_NAMESPACE}" \
-  DEVWORKSPACE_LINK="${DEVWORKSPACE_LINK}" \
-  MAX_VUS="${MAX_VUS}" \
-  EXECUTOR_MODE="${EXECUTOR_MODE}" \
-  TEST_DURATION_MINUTES="${TEST_DURATION_IN_MINUTES}" \
-  DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS="${DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS}" \
-  DELETE_DEVWORKSPACE_AFTER_READY="${DELETE_DEVWORKSPACE_AFTER_READY}" \
-  MAX_DEVWORKSPACES="${MAX_DEVWORKSPACES}" \
-  k6 run "${K6_SCRIPT}"
-  exit_code=$?
-  if [ $exit_code -ne 0 ]; then
-    echo "⚠️ k6 load test failed with exit code $exit_code. Proceeding to cleanup."
+
+  if IN_CLUSTER='false' \
+    KUBE_TOKEN="${KUBE_TOKEN}" \
+    KUBE_API="${KUBE_API}" \
+    DWO_NAMESPACE="${DWO_NAMESPACE}" \
+    CREATE_AUTOMOUNT_RESOURCES="${CREATE_AUTOMOUNT_RESOURCES}" \
+    SEPARATE_NAMESPACES="${SEPARATE_NAMESPACES}" \
+    LOAD_TEST_NAMESPACE="${LOAD_TEST_NAMESPACE}" \
+    DEVWORKSPACE_LINK="${DEVWORKSPACE_LINK}" \
+    MAX_VUS="${MAX_VUS}" \
+    EXECUTOR_MODE="${EXECUTOR_MODE}" \
+    TEST_DURATION_MINUTES="${TEST_DURATION_IN_MINUTES}" \
+    DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS="${DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS}" \
+    DELETE_DEVWORKSPACE_AFTER_READY="${DELETE_DEVWORKSPACE_AFTER_READY}" \
+    MAX_DEVWORKSPACES="${MAX_DEVWORKSPACES}" \
+    RUN_BACKUP_TEST_HOOK="${RUN_BACKUP_TEST_HOOK}" \
+    k6 run "${K6_SCRIPT}"; then
+    echo "✅ k6 load test completed successfully"
+  else
+    echo "⚠️ k6 load test failed (exit code $?). Continuing with cleanup and backup validation."
   fi
-  return 0
 }
 
 trap stop_background_watchers EXIT

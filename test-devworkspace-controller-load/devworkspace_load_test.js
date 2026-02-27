@@ -34,6 +34,7 @@ const apiServer = inCluster ? `https://kubernetes.default.svc` : __ENV.KUBE_API;
 const token = inCluster ? open('/var/run/secrets/kubernetes.io/serviceaccount/token') : __ENV.KUBE_TOKEN;
 const useSeparateNamespaces = __ENV.SEPARATE_NAMESPACES === "true";
 const deleteDevWorkspaceAfterReady = __ENV.DELETE_DEVWORKSPACE_AFTER_READY === "true";
+const runBackupTestHook = __ENV.RUN_BACKUP_TEST_HOOK === "true";
 const operatorNamespace = __ENV.DWO_NAMESPACE || 'openshift-operators';
 const shouldCreateAutomountResources = (__ENV.CREATE_AUTOMOUNT_RESOURCES || 'false') === 'true';
 const maxVUs = Number(__ENV.MAX_VUS || 50);
@@ -207,6 +208,12 @@ export default function () {
 }
 
 export function final_cleanup() {
+  // Skip cleanup if backup testing hook is enabled - backup tests need the workspaces
+  if (runBackupTestHook) {
+    console.log("Skipping final_cleanup - backup testing hook will run after k6 completes");
+    return;
+  }
+
   if (useSeparateNamespaces) {
     deleteAllSeparateNamespaces();
   } else {
@@ -258,6 +265,12 @@ export function handleSummary(data) {
 }
 
 export function teardown(data) {
+  // Skip cleanup if backup testing hook is enabled - backup tests need the workspaces
+  if (runBackupTestHook) {
+    console.log("Skipping cleanup - backup testing hook will run after k6 completes");
+    return;
+  }
+
   // Only run cleanup in teardown for shared-iterations mode
   // For ramping-vus mode, cleanup is handled by final_cleanup scenario
   if (executorMode === 'shared-iterations') {

@@ -1,0 +1,18 @@
+{
+  "description": "Backup/Restore Smoke Test - Quick validation with 50 workspaces",
+  "tests": [],
+  "custom_tests": [
+    {
+      "name": "backup_50_correct_config_smoke",
+      "args": "--mode binary --max-vus 50 --max-devworkspaces 50 --delete-devworkspace-after-ready false --separate-namespaces true --devworkspace-ready-timeout-seconds 900 --test-duration-minutes 15 --run-backup-test-hook true --dwoc-config-type correct --registry-path quay.io/CHANGEME --registry-secret quay-push-secret --backup-wait-minutes 15",
+      "enabled": true,
+      "description": "Smoke test: 50 workspaces with correct DWOC config"
+    },
+    {
+      "name": "backup_50_incorrect_config_smoke",
+      "args": "--mode binary --max-vus 50 --max-devworkspaces 50 --delete-devworkspace-after-ready false --separate-namespaces true --devworkspace-ready-timeout-seconds 900 --test-duration-minutes 15 --run-backup-test-hook true --dwoc-config-type incorrect --registry-path quay.io/CHANGEME --registry-secret quay-push-secret --backup-wait-minutes 15",
+      "enabled": true,
+      "description": "Smoke test: 50 workspaces with incorrect DWOC config (typo)"
+    }
+  ]
+}

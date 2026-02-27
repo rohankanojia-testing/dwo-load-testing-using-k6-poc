@@ -1,0 +1,18 @@
+{
+  "description": "Backup/Restore Load Test - Case 2: Incorrect DWOC Configuration (Typo in Registry)",
+  "tests": [],
+  "custom_tests": [
+    {
+      "name": "backup_500_incorrect_config",
+      "args": "--mode binary --max-vus 200 --max-devworkspaces 500 --delete-devworkspace-after-ready false --separate-namespaces true --devworkspace-ready-timeout-seconds 1800 --test-duration-minutes 30 --run-backup-test-hook true --dwoc-config-type incorrect --registry-path quay.io/CHANGEME --registry-secret quay-push-secret --backup-wait-minutes 30",
+      "enabled": true,
+      "description": "500 workspaces with backup testing - incorrect DWOC config (medium scale)"
+    },
+    {
+      "name": "backup_2000_incorrect_config",
+      "args": "--mode binary --max-vus 300 --max-devworkspaces 2000 --delete-devworkspace-after-ready false --separate-namespaces true --devworkspace-ready-timeout-seconds 3000 --test-duration-minutes 50 --run-backup-test-hook true --dwoc-config-type incorrect --registry-path quay.io/CHANGEME --registry-secret quay-push-secret --backup-wait-minutes 45",
+      "enabled": false,
+      "description": "2000 workspaces with backup testing - incorrect DWOC config (production scale)"
+    }
+  ]
+}

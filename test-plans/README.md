@@ -207,6 +207,79 @@ Full load tests with Eclipse Che integration to catch memory/CPU regressions:
 - CheCluster CR present (auto-discovered by the script)
 - Sufficient cluster resources for certificate ConfigMap provisioning
 
+### 6. `backup-restore-smoke-test-plan.json` - Backup/Restore Quick Validation
+Quick smoke test for backup/restore functionality with 50 workspaces:
+- 50 workspaces with correct DWOC configuration - enabled
+- 50 workspaces with incorrect DWOC configuration (typo) - enabled
+- Both tests create workspaces, stop them, and monitor backup Jobs
+
+**Use this to:**
+- Quickly validate backup/restore setup
+- Test registry credentials and DWOC configuration
+- Verify backup Job creation and monitoring
+- Test both success and failure scenarios
+
+**Usage:**
+```bash
+# Update registry path in test plan first
+sed -i 's/quay.io\/CHANGEME/quay.io\/yourusername/g' \
+  test-plans/backup-restore-smoke-test-plan.json
+
+# Run smoke test
+./scripts/run_all_loadtests.sh test-plans/backup-restore-smoke-test-plan.json
+```
+
+### 7. `backup-restore-correct-config-test-plan.json` - Backup/Restore Load Testing (Correct Config)
+Full load tests with correct DWOC backup configuration:
+- 500 workspaces in separate namespaces (30 min) - enabled
+- 2000 workspaces in separate namespaces (50 min) - disabled by default
+
+**What makes this different:**
+- Tests backup functionality under load
+- Monitors backup Job success rates (expected >95%)
+- Tracks resource usage during backup operations
+- Validates backup completion within timeout
+
+**Usage:**
+```bash
+# Update registry path first
+sed -i 's/quay.io\/CHANGEME/quay.io\/yourusername/g' \
+  test-plans/backup-restore-correct-config-test-plan.json
+
+# Run test
+./scripts/run_all_loadtests.sh test-plans/backup-restore-correct-config-test-plan.json
+```
+
+### 8. `backup-restore-incorrect-config-test-plan.json` - Backup/Restore Load Testing (Incorrect Config)
+Load tests with intentionally misconfigured DWOC (typo in registry path):
+- 500 workspaces in separate namespaces (30 min) - enabled
+- 2000 workspaces in separate namespaces (50 min) - disabled by default
+
+**What makes this different:**
+- Tests backup failure handling under load
+- Validates multiple backup Job creation due to misconfiguration
+- Monitors resource spike during failures
+- Tracks failure patterns and error rates (expected 100% failure)
+
+**Usage:**
+```bash
+# Update registry path first
+sed -i 's/quay.io\/CHANGEME/quay.io\/yourusername/g' \
+  test-plans/backup-restore-incorrect-config-test-plan.json
+
+# Run test
+./scripts/run_all_loadtests.sh test-plans/backup-restore-incorrect-config-test-plan.json
+```
+
+**Prerequisites for backup/restore tests:**
+- Registry credentials (Quay.io or OpenShift internal registry)
+- Registry secret created: `quay-push-secret` (labeled with `controller.devfile.io/watch-secret=true`)
+- DevWorkspace Operator with backup feature enabled
+- Sufficient cluster resources (50 workspaces: minimal, 500: medium, 2000+: powerful cluster)
+- **MUST use:** `--separate-namespaces true` and `--delete-devworkspace-after-ready false`
+
+**For detailed documentation, see:** [BACKUP_LOAD_TESTING.md](../test-devworkspace-controller-load/BACKUP_LOAD_TESTING.md)
+
 ## Environment Variables
 
 The script respects the same environment variables:
