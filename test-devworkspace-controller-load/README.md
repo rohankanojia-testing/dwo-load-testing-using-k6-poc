@@ -34,8 +34,17 @@ make test_load ARGS=" \
 ```
 
 **Note**: When `--run-with-eclipse-che true` is set, the script will:
+- **Automatically install Eclipse Che if not already present** (requires `chectl`)
+  - Detects platform: CRC, OpenShift, or Kubernetes
+  - Uses appropriate chectl deployment command
+  - Waits for Che to become ready
 - Provision a workspace namespace compatible with Eclipse Che
-- Create additional certificate ConfigMaps required by Che
+- Create additional certificate ConfigMaps required by Che (750 certificates ~1MiB)
+
+**Prerequisites for Eclipse Che tests:**
+- `chectl` CLI installed (only if Che is not already installed)
+  - Install: `npm install -g chectl` or `bash <(curl -sL https://che-incubator.github.io/chectl/install.sh)`
+  - More info: https://github.com/che-incubator/chectl
 
 ### Running without Eclipse Che
 

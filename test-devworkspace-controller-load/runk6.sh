@@ -2,6 +2,7 @@
 
 source test-devworkspace-controller-load/provision-che-workspace-namespace.sh
 source test-devworkspace-controller-load/che-cert-bundle-utils.sh
+source test-devworkspace-controller-load/install-che-if-needed.sh
 
 
 MODE="binary"  # or 'operator'
@@ -39,6 +40,7 @@ main() {
   if [[ "$RUN_WITH_ECLIPSE_CHE" == "false" ]]; then
     create_namespace
   else
+    install_che_if_needed
     detect_che_namespace
     provision_che_workspace_namespace "$LOAD_TEST_NAMESPACE" "$CHE_NAMESPACE"
     run_che_ca_bundle_e2e "$CHE_NAMESPACE" "$LOAD_TEST_NAMESPACE" "test-devworkspace" "$TEST_CERTIFICATES_COUNT"

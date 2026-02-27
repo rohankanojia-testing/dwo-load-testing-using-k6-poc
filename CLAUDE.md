@@ -56,6 +56,7 @@ Signed-off-by: Your Name <your.email@example.com>
 
 - `runk6.sh` - Main entry point for controller load tests
 - `create-users-and-runk6.sh` - Main entry point for webhook server load tests
+- `install-che-if-needed.sh` - Automatic Eclipse Che installation and platform detection
 - `che-cert-bundle-utils.sh` - Utilities for Eclipse Che certificate management
 - `provision-che-workspace-namespace.sh` - Namespace provisioning for Che workspaces
 - `run_all_loadtests.sh` - Suite runner for multiple controller test configurations
@@ -88,10 +89,12 @@ When adding features:
 ### Eclipse Che/Dev Spaces Integration
 
 When working with Che/DevSpaces-related code:
-- Use platform detection to determine if running on Eclipse Che or Red Hat Dev Spaces
+- Eclipse Che is automatically installed if `--run-with-eclipse-che true` is set and Che is not present
+- Platform detection determines deployment target: CRC, OpenShift, or Kubernetes
 - Auto-discover CheCluster name and namespace (see `get_checluster_name()`)
 - Handle both deployment names: `che` and `devspaces`
-- Certificate bundle management is only needed when `--run-with-eclipse-che true`
+- Certificate bundle management (750 certs ~1MiB) is automatically provisioned when `--run-with-eclipse-che true`
+- Requires `chectl` CLI only if Che needs to be installed
 
 ### K6 Load Test Scripts
 
