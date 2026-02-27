@@ -166,6 +166,47 @@ Comprehensive test plan with multiple scale options (all disabled by default):
 ./scripts/run_all_loadtests.sh test-plans/controller-test-plan.json
 ```
 
+### 4. `eclipse-che-smoke-test-plan.json` - Eclipse Che Quick Validation
+Quick smoke test with Eclipse Che integration and CA bundle ConfigMap:
+- 50 DevWorkspaces in single namespace (15 min)
+- Creates 750 dummy CA certificates (~1MiB ConfigMap)
+- Monitors etcd CPU/memory usage
+
+**Use this to:**
+- Quickly validate Eclipse Che setup before full load tests
+- Test the CA bundle certificate provisioning
+- Verify etcd metrics collection is working
+
+**Usage:**
+```bash
+./scripts/run_all_loadtests.sh test-plans/eclipse-che-smoke-test-plan.json
+```
+
+### 5. `eclipse-che-test-plan.json` - Eclipse Che Load Testing
+Full load tests with Eclipse Che integration to catch memory/CPU regressions:
+- 1500 DevWorkspaces in single namespace (40 min) - enabled
+- 1500 DevWorkspaces in separate namespaces (60 min) - enabled
+- Additional scale options for 1000 and 2000 DevWorkspaces - disabled by default
+
+**What makes this different:**
+- Provisions large CA bundle ConfigMap with 750 certificates (approaching 1MiB limit)
+- Monitors etcd resource usage throughout the test
+- Helps catch issues like [CRW-8316](https://issues.redhat.com/browse/CRW-8316) before release
+
+**Usage:**
+```bash
+# Run smoke test first to validate setup
+./scripts/run_all_loadtests.sh test-plans/eclipse-che-smoke-test-plan.json
+
+# Then run full load tests
+./scripts/run_all_loadtests.sh test-plans/eclipse-che-test-plan.json
+```
+
+**Prerequisites for Eclipse Che tests:**
+- Eclipse Che or Red Hat Dev Spaces installed in the cluster
+- CheCluster CR present (auto-discovered by the script)
+- Sufficient cluster resources for certificate ConfigMap provisioning
+
 ## Environment Variables
 
 The script respects the same environment variables:

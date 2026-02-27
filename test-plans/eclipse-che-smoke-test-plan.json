@@ -1,0 +1,12 @@
+{
+  "description": "Eclipse Che Smoke Test Plan - Quick validation with CA bundle ConfigMap",
+  "tests": [],
+  "custom_tests": [
+    {
+      "name": "che_smoke_test_50_15m",
+      "args": "--mode binary --max-vus 50 --create-automount-resources true --max-devworkspaces 50 --delete-devworkspace-after-ready false --separate-namespaces false --devworkspace-ready-timeout-seconds 900 --test-duration-minutes 15 --run-with-eclipse-che true",
+      "enabled": true,
+      "description": "Quick smoke test - 50 DevWorkspaces with Eclipse Che (750 certificates)"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "description": "Eclipse Che Load Testing Plan - Tests with large CA bundle ConfigMap to verify memory/CPU impact",
+  "tests": [],
+  "custom_tests": [
+    {
+      "name": "che_1500_single_ns_40m",
+      "args": "--mode binary --max-vus 300 --create-automount-resources true --max-devworkspaces 1500 --delete-devworkspace-after-ready false --separate-namespaces false --devworkspace-ready-timeout-seconds 2400 --test-duration-minutes 40 --run-with-eclipse-che true",
+      "enabled": true,
+      "description": "1500 DevWorkspaces in single namespace with Eclipse Che (750 certificates)"
+    },
+    {
+      "name": "che_1500_separate_ns_60m",
+      "args": "--mode binary --max-vus 300 --create-automount-resources true --max-devworkspaces 1500 --delete-devworkspace-after-ready false --separate-namespaces true --devworkspace-ready-timeout-seconds 3600 --test-duration-minutes 60 --run-with-eclipse-che true",
+      "enabled": true,
+      "description": "1500 DevWorkspaces in separate namespaces with Eclipse Che (750 certificates)"
+    },
+    {
+      "name": "che_1000_single_ns_30m",
+      "args": "--mode binary --max-vus 300 --create-automount-resources true --max-devworkspaces 1000 --delete-devworkspace-after-ready false --separate-namespaces false --devworkspace-ready-timeout-seconds 1800 --test-duration-minutes 30 --run-with-eclipse-che true",
+      "enabled": false,
+      "description": "1000 DevWorkspaces in single namespace with Eclipse Che (disabled example)"
+    },
+    {
+      "name": "che_2000_single_ns_50m",
+      "args": "--mode binary --max-vus 300 --create-automount-resources true --max-devworkspaces 2000 --delete-devworkspace-after-ready false --separate-namespaces false --devworkspace-ready-timeout-seconds 3000 --test-duration-minutes 50 --run-with-eclipse-che true",
+      "enabled": false,
+      "description": "2000 DevWorkspaces in single namespace with Eclipse Che"
+    }
+  ]
+}
