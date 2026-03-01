@@ -57,6 +57,17 @@ configure_dwoc_for_backup_if_needed() {
     exit 1
   fi
 
+  # Override DEVWORKSPACE_LINK to use persistent storage template for backup testing
+  # Only override if the user hasn't explicitly set a custom link via --devworkspace-link
+  local default_ephemeral_link="https://gist.githubusercontent.com/rohanKanojia/ecf625afaf3fe817ac7d1db78bd967fc/raw/8c30c0370444040105ca45cd4ac0f7062a644bb7/dw-minimal.json"
+  if [[ "$DEVWORKSPACE_LINK" == "$default_ephemeral_link" ]]; then
+    echo "ℹ️  Overriding DEVWORKSPACE_LINK to use persistent storage template for backup testing..."
+    DEVWORKSPACE_LINK="https://gist.githubusercontent.com/rohanKanojia/264b3709a34a8e1d42e2a88f5eaf5af3/raw/55ecd33195985aad5b23af62ed34a7cc4255115e/code-latest.json"
+    echo "ℹ️  New DEVWORKSPACE_LINK: $DEVWORKSPACE_LINK"
+  else
+    echo "ℹ️  Using custom DEVWORKSPACE_LINK: $DEVWORKSPACE_LINK"
+  fi
+
   # Source the configuration script
   source test-devworkspace-controller-load/backup/configure-dwoc-backup.sh
 
