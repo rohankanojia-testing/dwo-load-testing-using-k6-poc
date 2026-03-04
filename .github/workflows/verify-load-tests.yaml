@@ -1,0 +1,89 @@
+name: Verify Load Tests
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+env:
+  DWO_NAMESPACE: devworkspace-controller
+  LOAD_TEST_NAMESPACE: loadtest-devworkspaces
+
+jobs:
+  verify-load-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        kubernetes: [v1.33.0]
+    steps:
+      - name: Check out code
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+
+      - name: Setup Minikube-Kubernetes
+        uses: manusa/actions-setup-minikube@b589f2d61bf96695c546929c72b38563e856059d # v2.14.0
+        with:
+          minikube version: 'v1.38.1'
+          kubernetes version: ${{ matrix.kubernetes }}
+          github token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install and Enable Minikube addons metrics-server
+        run: |
+          minikube addons enable metrics-server
+          kubectl rollout status deployment/metrics-server -n kube-system --timeout=300s
+
+      - name: Install and Wait for cert-manager to be ready
+        run: |
+          kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.18.2/cert-manager.yaml
+          kubectl rollout status deployment/cert-manager -n cert-manager --timeout=300s
+          kubectl rollout status deployment/cert-manager-webhook -n cert-manager --timeout=300s
+          kubectl rollout status deployment/cert-manager-cainjector -n cert-manager --timeout=300s
+
+      - name: Enable and Wait for Ingress addon
+        run: |
+          minikube addons enable ingress
+          kubectl rollout status deployment/ingress-nginx-controller -n ingress-nginx --timeout=300s
+
+      - name: Set up Go 1.x
+        uses: actions/setup-go@93397bea11091df50f3d7e59dc26a7711a8bcfbe # v4.1.0
+        with:
+          go-version: 1.25.7
+
+      - name: Clone and Install DevWorkspace Operator
+        run: |
+          git clone https://github.com/devfile/devworkspace-operator.git /tmp/devworkspace-operator
+          cd /tmp/devworkspace-operator
+          git log -1 --oneline
+          export NAMESPACE=$DWO_NAMESPACE
+          make install
+          kubectl get pods -n $DWO_NAMESPACE
+          kubectl rollout status deployment/devworkspace-controller-manager -n $DWO_NAMESPACE --timeout=300s
+          kubectl get pods -n $DWO_NAMESPACE
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+          k6 version
+
+      - name: Run Load Test with 1 Workspace
+        run: |
+          export KUBECONFIG=$HOME/.kube/config
+          export DWO_NAMESPACE=${{ env.DWO_NAMESPACE }}
+          make test_load ARGS="--max-vus 1 --max-devworkspaces 1 --dwo-namespace $LOAD_TEST_NAMESPACE --delete-devworkspace-after-ready false --test-duration-minutes 5"
+
+      - name: Check DevWorkspace Operator Logs
+        if: failure()
+        run: |
+          echo "📋 DevWorkspace Operator Logs:"
+          kubectl logs -n $DWO_NAMESPACE -l app.kubernetes.io/name=devworkspace-controller --tail=100 || true
+
+      - name: Check DevWorkspace Status
+        if: failure()
+        run: |
+          echo "📋 DevWorkspace Status:"
+          kubectl get devworkspaces -A -o yaml || true
