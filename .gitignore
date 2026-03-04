@@ -1,5 +1,8 @@
 devworkspace-load-test-report.html
+backup-load-test-report.html
 .idea/
 logs/
+outputs/
 temp-certs/
 custom-ca-certificates.pem
+*.csv

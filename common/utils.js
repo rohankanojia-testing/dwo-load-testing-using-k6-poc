@@ -211,3 +211,162 @@ function createOpinionatedDevWorkspace(loadTestNamespace) {
         },
     };
 }
+
+/**
+ * Detect cluster type (OpenShift vs Kubernetes) and set appropriate ETCD namespace/pod pattern
+ * @param {string} apiServer - Kubernetes API server URL
+ * @param {Object} headers - HTTP headers with authentication
+ * @returns {Object} Object with etcdNamespace and etcdPodPattern
+ */
+export function detectClusterType(apiServer, headers) {
+    const apiGroupsUrl = `${apiServer}/apis`;
+    const res = http.get(apiGroupsUrl, {headers});
+
+    let etcdNamespace = 'openshift-etcd';
+    let etcdPodPattern = 'etcd';
+
+    if (res.status === 200) {
+        try {
+            const data = JSON.parse(res.body);
+            const groups = data.groups || [];
+            const hasOpenShiftRoutes = groups.some(g => g.name === 'route.openshift.io');
+
+            if (!hasOpenShiftRoutes) {
+                etcdNamespace = __ENV.ETCD_NAMESPACE || 'kube-system';
+                etcdPodPattern = __ENV.ETCD_POD_NAME_PATTERN || 'kube-proxy';
+                console.log('Detected Kubernetes cluster - using kube-system namespace with kube-proxy');
+            }
+        } catch (e) {
+            console.warn(`Failed to detect cluster type: ${e.message}, using defaults`);
+        }
+    }
+
+    return {
+        etcdNamespace,
+        etcdPodPattern,
+    };
+}
+
+/**
+ * Check DevWorkspace operator metrics (CPU and memory)
+ * @param {string} apiServer - Kubernetes API server URL
+ * @param {Object} headers - HTTP headers with authentication
+ * @param {string} operatorNamespace - Operator namespace
+ * @param {number} maxCpuMillicores - Max CPU threshold in millicores
+ * @param {number} maxMemoryBytes - Max memory threshold in bytes
+ * @param {Object} metrics - Metrics object with operatorCpu, operatorMemory, operatorCpuViolations, operatorMemViolations
+ * @param {Object} operatorPodRestarts - Pod restart counter metric
+ * @param {string} operatorPodSelector - Label selector for operator pods
+ */
+export function checkDevWorkspaceOperatorMetrics(apiServer, headers, operatorNamespace, maxCpuMillicores, maxMemoryBytes, metrics, operatorPodRestarts, operatorPodSelector) {
+    const metricsUrl = `${apiServer}/apis/metrics.k8s.io/v1beta1/namespaces/${operatorNamespace}/pods`;
+    const res = http.get(metricsUrl, {headers});
+
+    if (res.status !== 200) {
+        return;
+    }
+
+    const data = JSON.parse(res.body);
+    const operatorPods = data.items.filter(p => p.metadata.name.includes("devworkspace-controller"));
+
+    for (const pod of operatorPods) {
+        const container = pod.containers[0];
+        const name = pod.metadata.name;
+
+        const cpu = parseCpuToMillicores(container.usage.cpu);
+        const memory = parseMemoryToBytes(container.usage.memory);
+
+        metrics.operatorCpu.add(cpu);
+        metrics.operatorMemory.add(memory / 1024 / 1024);
+
+        const cpuOk = cpu <= maxCpuMillicores;
+        const memOk = memory <= maxMemoryBytes;
+
+        if (!cpuOk) {
+            metrics.operatorCpuViolations.add(1);
+        }
+        if (!memOk) {
+            metrics.operatorMemViolations.add(1);
+        }
+    }
+
+    checkPodRestarts(apiServer, headers, operatorNamespace, operatorPodSelector, operatorPodRestarts);
+}
+
+/**
+ * Check etcd metrics (CPU and memory)
+ * @param {string} apiServer - Kubernetes API server URL
+ * @param {Object} headers - HTTP headers with authentication
+ * @param {string} etcdNamespace - ETCD namespace
+ * @param {string} etcdPodPattern - ETCD pod name pattern
+ * @param {Object} metrics - Metrics object with etcdCpu, etcdMemory
+ * @param {Object} etcdPodRestarts - Pod restart counter metric
+ * @param {string} etcdPodSelector - Label selector for etcd pods
+ */
+export function checkEtcdMetrics(apiServer, headers, etcdNamespace, etcdPodPattern, metrics, etcdPodRestarts, etcdPodSelector) {
+    if (!etcdNamespace || !etcdPodPattern) {
+        console.warn(`[ETCD METRICS] Variables not initialized: etcdNamespace=${etcdNamespace}, etcdPodPattern=${etcdPodPattern}`);
+        return;
+    }
+
+    const metricsUrl = `${apiServer}/apis/metrics.k8s.io/v1beta1/namespaces/${etcdNamespace}/pods`;
+    const res = http.get(metricsUrl, {headers});
+
+    if (res.status !== 200) {
+        return;
+    }
+
+    const data = JSON.parse(res.body);
+    const etcdPods = data.items.filter(p => p.metadata.name.includes(etcdPodPattern));
+
+    if (etcdPods.length === 0) {
+        if (data.items && data.items.length > 0) {
+            const podNames = data.items.map(p => p.metadata.name).join(', ');
+            console.warn(`[ETCD METRICS] No pods found matching pattern '${etcdPodPattern}' in namespace '${etcdNamespace}'. Available pods: ${podNames}`);
+        } else {
+            console.warn(`[ETCD METRICS] No pods found in namespace '${etcdNamespace}'`);
+        }
+        return;
+    }
+
+    for (const pod of etcdPods) {
+        if (!pod.containers || pod.containers.length === 0) {
+            console.warn(`[ETCD METRICS] Pod ${pod.metadata.name} has no containers`);
+            continue;
+        }
+        const container = pod.containers[0];
+        const name = pod.metadata.name;
+
+        if (!container.usage?.cpu || !container.usage?.memory) {
+            console.warn(
+                `[ETCD METRICS] Pod ${name} has no usage data:`,
+                JSON.stringify(container.usage)
+            );
+            continue;
+        }
+
+        const cpu = parseCpuToMillicores(container.usage.cpu);
+        const memory = parseMemoryToBytes(container.usage.memory);
+
+        metrics.etcdCpu.add(cpu);
+        metrics.etcdMemory.add(memory / 1024 / 1024);
+    }
+
+    checkPodRestarts(apiServer, headers, etcdNamespace, etcdPodSelector, etcdPodRestarts);
+}
+
+/**
+ * Create filtered summary report with only allowed metrics
+ * @param {Object} data - k6 summary data
+ * @param {Array} allowedMetrics - Array of allowed metric names
+ * @returns {Object} Filtered data object
+ */
+export function createFilteredSummaryData(data, allowedMetrics) {
+    const filteredData = JSON.parse(JSON.stringify(data));
+    for (const key of Object.keys(filteredData.metrics)) {
+        if (!allowedMetrics.includes(key)) {
+            delete filteredData.metrics[key];
+        }
+    }
+    return filteredData;
+}

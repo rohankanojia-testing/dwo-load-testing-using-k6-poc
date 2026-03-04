@@ -27,6 +27,10 @@ import {
   getDevWorkspacesFromApiServer,
   doHttpPostDevWorkspaceCreate,
   createAuthHeaders,
+  detectClusterType,
+  checkDevWorkspaceOperatorMetrics,
+  checkEtcdMetrics,
+  createFilteredSummaryData,
 } from '../common/utils.js';
 
 const inCluster = __ENV.IN_CLUSTER === 'true';
@@ -34,10 +38,10 @@ const apiServer = inCluster ? `https://kubernetes.default.svc` : __ENV.KUBE_API;
 const token = inCluster ? open('/var/run/secrets/kubernetes.io/serviceaccount/token') : __ENV.KUBE_TOKEN;
 const useSeparateNamespaces = __ENV.SEPARATE_NAMESPACES === "true";
 const deleteDevWorkspaceAfterReady = __ENV.DELETE_DEVWORKSPACE_AFTER_READY === "true";
-const runBackupTestHook = __ENV.RUN_BACKUP_TEST_HOOK === "true";
+const skipCleanup = __ENV.SKIP_CLEANUP === "true";
 const operatorNamespace = __ENV.DWO_NAMESPACE || 'openshift-operators';
 const shouldCreateAutomountResources = (__ENV.CREATE_AUTOMOUNT_RESOURCES || 'false') === 'true';
-const maxVUs = Number(__ENV.MAX_VUS || 50);
+const maxVUs = Number(__ENV.MAX_VUS || 20);
 const maxDevWorkspaces = Number(__ENV.MAX_DEVWORKSPACES || -1);
 const devWorkspaceReadyTimeout = Number(__ENV.DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS || 600);
 const pollWaitInterval = 10; // seconds between DevWorkspace status polls
@@ -94,7 +98,7 @@ function buildScenarios() {
   } else if (executorMode === 'shared-iterations') {
     scenarios.create_and_delete_devworkspaces = {
       executor: 'shared-iterations',
-      vus: 20,
+      vus: maxVUs,
       iterations: maxDevWorkspaces,
       maxDuration: '3h',
     };
@@ -140,29 +144,10 @@ const etcdPodRestarts = new Gauge('etcd_pod_restarts_total');
 const maxCpuMillicores = 250;
 const maxMemoryBytes = 200 * 1024 * 1024;
 
-function detectClusterType() {
-  const apiGroupsUrl = `${apiServer}/apis`;
-  const res = http.get(apiGroupsUrl, {headers});
-  
-  if (res.status === 200) {
-    try {
-      const data = JSON.parse(res.body);
-      const groups = data.groups || [];
-      const hasOpenShiftRoutes = groups.some(g => g.name === 'route.openshift.io');
-      
-      if (!hasOpenShiftRoutes) {
-        ETCD_NAMESPACE = __ENV.ETCD_NAMESPACE || 'kube-system';
-        ETCD_POD_NAME_PATTERN = __ENV.ETCD_POD_NAME_PATTERN || 'kube-proxy';
-        console.log('Detected Kubernetes cluster - using kube-system namespace with kube-proxy');
-      }
-    } catch (e) {
-      console.warn(`Failed to detect cluster type: ${e.message}, using defaults`);
-    }
-  }
-}
-
 export function setup() {
-  detectClusterType();
+  const clusterInfo = detectClusterType(apiServer, headers);
+  ETCD_NAMESPACE = clusterInfo.etcdNamespace;
+  ETCD_POD_NAME_PATTERN = clusterInfo.etcdPodPattern;
 
   if (shouldCreateAutomountResources) {
     createNewAutomountConfigMap();
@@ -208,9 +193,9 @@ export default function () {
 }
 
 export function final_cleanup() {
-  // Skip cleanup if backup testing hook is enabled - backup tests need the workspaces
-  if (runBackupTestHook) {
-    console.log("Skipping final_cleanup - backup testing hook will run after k6 completes");
+  // Skip cleanup if SKIP_CLEANUP flag is set
+  if (skipCleanup) {
+    console.log("Skipping final_cleanup - SKIP_CLEANUP flag is enabled");
     return;
   }
 
@@ -227,7 +212,7 @@ export function final_cleanup() {
 }
 
 export function handleSummary(data) {
-  const allowed = [
+  const allowedMetrics = [
     'devworkspace_create_count',
     'devworkspace_create_duration',
     'devworkspace_delete_duration',
@@ -245,12 +230,7 @@ export function handleSummary(data) {
     'average_etcd_memory'
   ];
 
-  const filteredData = JSON.parse(JSON.stringify(data));
-  for (const key of Object.keys(filteredData.metrics)) {
-    if (!allowed.includes(key)) {
-      delete filteredData.metrics[key];
-    }
-  }
+  const filteredData = createFilteredSummaryData(data, allowedMetrics);
 
   let loadTestSummaryReport = {
     stdout: textSummary(filteredData, {indent: ' ', enableColors: true})
@@ -265,9 +245,9 @@ export function handleSummary(data) {
 }
 
 export function teardown(data) {
-  // Skip cleanup if backup testing hook is enabled - backup tests need the workspaces
-  if (runBackupTestHook) {
-    console.log("Skipping cleanup - backup testing hook will run after k6 completes");
+  // Skip cleanup if SKIP_CLEANUP flag is set
+  if (skipCleanup) {
+    console.log("Skipping cleanup - SKIP_CLEANUP flag is enabled");
     return;
   }
 
@@ -329,8 +309,8 @@ function waitUntilDevWorkspaceIsReady(vuId, crName, namespace) {
       }
     }
 
-    checkDevWorkspaceOperatorMetrics();
-    checkEtcdMetrics();
+    checkOperatorMetrics();
+    checkSystemEtcdMetrics();
     sleep(pollWaitInterval);
     attempts++;
   }
@@ -368,106 +348,22 @@ function deleteDevWorkspace(crName, namespace) {
   });
 }
 
-function checkDevWorkspaceOperatorMetrics() {
-  const metricsUrl = `${apiServer}/apis/metrics.k8s.io/v1beta1/namespaces/${operatorNamespace}/pods`;
-  const res = http.get(metricsUrl, {headers});
-
-
-  check(res, {
-    'Fetched pod metrics successfully': (r) => r.status === 200,
-  });
-
-  if (res.status !== 200) {
-    return;
-  }
-
-  const data = JSON.parse(res.body);
-  const operatorPods = data.items.filter(p => p.metadata.name.includes("devworkspace-controller"));
-
-  for (const pod of operatorPods) {
-    const container = pod.containers[0]; // assuming single container
-    const name = pod.metadata.name;
-
-    const cpu = parseCpuToMillicores(container.usage.cpu);
-    const memory = parseMemoryToBytes(container.usage.memory);
-
-    operatorCpu.add(cpu);
-    operatorMemory.add(memory / 1024 / 1024);
-
-    const cpuOk = cpu <= maxCpuMillicores;
-    const memOk = memory <= maxMemoryBytes;
-
-    if (!cpuOk) {
-      operatorCpuViolations.add(1);
-    }
-    if (!memOk) {
-      operatorMemViolations.add(1);
-    }
-
-    check(null, {
-      [`[${name}] CPU < ${maxCpuMillicores}m`]: () => cpuOk,
-      [`[${name}] Memory < ${Math.round(maxMemoryBytes / 1024 / 1024)}Mi`]: () => memOk,
-    });
-  }
-
-  // Check for pod restarts
-  checkPodRestarts(apiServer, headers, operatorNamespace, OPERATOR_POD_SELECTOR, operatorPodRestarts);
+function checkOperatorMetrics() {
+  const metrics = {
+    operatorCpu,
+    operatorMemory,
+    operatorCpuViolations,
+    operatorMemViolations,
+  };
+  checkDevWorkspaceOperatorMetrics(apiServer, headers, operatorNamespace, maxCpuMillicores, maxMemoryBytes, metrics, operatorPodRestarts, OPERATOR_POD_SELECTOR);
 }
 
-function checkEtcdMetrics() {
-  if (!ETCD_NAMESPACE || !ETCD_POD_NAME_PATTERN) {
-    console.warn(`[ETCD METRICS] Variables not initialized: etcdNamespace=${ETCD_NAMESPACE}, etcdPodNamePattern=${ETCD_POD_NAME_PATTERN}`);
-    return;
-  }
-
-  const metricsUrl = `${apiServer}/apis/metrics.k8s.io/v1beta1/namespaces/${ETCD_NAMESPACE}/pods`;
-  const res = http.get(metricsUrl, {headers});
-
-  check(res, {
-    'Fetched etcd pod metrics successfully': (r) => r.status === 200,
-  });
-
-  if (res.status !== 200) {
-    return;
-  }
-
-  const data = JSON.parse(res.body);
-  const etcdPods = data.items.filter(p => p.metadata.name.includes(ETCD_POD_NAME_PATTERN));
-
-  if (etcdPods.length === 0) {
-    if (data.items && data.items.length > 0) {
-      const podNames = data.items.map(p => p.metadata.name).join(', ');
-      console.warn(`[ETCD METRICS] No pods found matching pattern '${ETCD_POD_NAME_PATTERN}' in namespace '${ETCD_NAMESPACE}'. Available pods: ${podNames}`);
-    } else {
-      console.warn(`[ETCD METRICS] No pods found in namespace '${ETCD_NAMESPACE}'`);
-    }
-    return;
-  }
-
-  for (const pod of etcdPods) {
-    if (!pod.containers || pod.containers.length === 0) {
-      console.warn(`[ETCD METRICS] Pod ${pod.metadata.name} has no containers`);
-      continue;
-    }
-    const container = pod.containers[0];
-    const name = pod.metadata.name;
-
-    if (!container.usage?.cpu || !container.usage?.memory) {
-      console.warn(
-          `[ETCD METRICS] Pod ${name} has no usage data:`,
-          JSON.stringify(container.usage)
-      );
-      continue;
-    }
-
-    const cpu = parseCpuToMillicores(container.usage.cpu);
-    const memory = parseMemoryToBytes(container.usage.memory);
-
-    etcdCpu.add(cpu);
-    etcdMemory.add(memory / 1024 / 1024);
-  }
-
-  checkPodRestarts(apiServer, headers, ETCD_NAMESPACE, ETCD_POD_SELECTOR, etcdPodRestarts);
+function checkSystemEtcdMetrics() {
+  const metrics = {
+    etcdCpu,
+    etcdMemory,
+  };
+  checkEtcdMetrics(apiServer, headers, ETCD_NAMESPACE, ETCD_POD_NAME_PATTERN, metrics, etcdPodRestarts, ETCD_POD_SELECTOR);
 }
 
 function createNewNamespace(namespaceName) {

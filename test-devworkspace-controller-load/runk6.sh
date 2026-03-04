@@ -17,7 +17,7 @@ K6_CR_NAME="k6-test-run"
 K6_SCRIPT="test-devworkspace-controller-load/devworkspace_load_test.js"
 K6_OPERATOR_VERSION="v0.0.22"
 DEVWORKSPACE_LINK="https://gist.githubusercontent.com/rohanKanojia/ecf625afaf3fe817ac7d1db78bd967fc/raw/8c30c0370444040105ca45cd4ac0f7062a644bb7/dw-minimal.json"
-MAX_VUS="100"
+MAX_VUS="${MAX_VUS:-100}"
 DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS="1200"
 SEPARATE_NAMESPACES="false"
 DELETE_DEVWORKSPACE_AFTER_READY="true"
@@ -32,56 +32,14 @@ MIN_K6_VERSION="1.1.0"
 CHE_NAMESPACE=""  # Auto-detected based on platform
 CHE_CLUSTER_NAME=""  # Auto-discovered from cluster
 TEST_CERTIFICATES_COUNT="750" # ConfigMap limit is 1048576 bytes; leave room for ~156 system certs
-RUN_BACKUP_TEST_HOOK="false"  # Run backup testing hook after load test completes
-DWOC_CONFIG_TYPE="correct"  # DWOC configuration type: 'correct' or 'incorrect'
-REGISTRY_PATH=""  # Registry path for backup images (e.g., quay.io/username)
-REGISTRY_SECRET=""  # Registry secret name for authentication
-BACKUP_WAIT_MINUTES="30"  # How long to wait for backup Jobs to complete
+SKIP_CLEANUP="${SKIP_CLEANUP:-false}"  # Skip cleanup after load test (default: false)
 
 # ----------- Helper Functions -----------
-configure_dwoc_for_backup_if_needed() {
-  if [[ "$RUN_BACKUP_TEST_HOOK" != "true" ]]; then
-    return 0
-  fi
-
-  echo "🔧 Configuring DWOC for backup testing (before load test)..."
-
-  # Use default secret name if not provided
-  if [[ -z "$REGISTRY_SECRET" ]]; then
-    REGISTRY_SECRET="quay-push-secret"
-  fi
-
-  # Validate required parameters
-  if [[ -z "$REGISTRY_PATH" ]]; then
-    echo "❌ --registry-path is required when --run-backup-test-hook is enabled"
-    exit 1
-  fi
-
-  # Override DEVWORKSPACE_LINK to use persistent storage template for backup testing
-  # Only override if the user hasn't explicitly set a custom link via --devworkspace-link
-  local default_ephemeral_link="https://gist.githubusercontent.com/rohanKanojia/ecf625afaf3fe817ac7d1db78bd967fc/raw/8c30c0370444040105ca45cd4ac0f7062a644bb7/dw-minimal.json"
-  if [[ "$DEVWORKSPACE_LINK" == "$default_ephemeral_link" ]]; then
-    echo "ℹ️  Overriding DEVWORKSPACE_LINK to use persistent storage template for backup testing..."
-    DEVWORKSPACE_LINK="https://gist.githubusercontent.com/rohanKanojia/264b3709a34a8e1d42e2a88f5eaf5af3/raw/55ecd33195985aad5b23af62ed34a7cc4255115e/code-latest.json"
-    echo "ℹ️  New DEVWORKSPACE_LINK: $DEVWORKSPACE_LINK"
-  else
-    echo "ℹ️  Using custom DEVWORKSPACE_LINK: $DEVWORKSPACE_LINK"
-  fi
-
-  # Source the configuration script
-  source test-devworkspace-controller-load/backup/configure-dwoc-backup.sh
-
-  # Configure DWOC for backup
-  configure_dwoc_for_backup "$DWOC_CONFIG_TYPE" "$REGISTRY_PATH" "$REGISTRY_SECRET"
-  echo "✅ DWOC configured for backup"
-  echo ""
-}
 
 # ----------- Main Execution Flow -----------
 main() {
   parse_arguments "$@"
   check_prerequisites
-  configure_dwoc_for_backup_if_needed
 
   if [[ "$RUN_WITH_ECLIPSE_CHE" == "false" ]]; then
     create_namespace
@@ -110,21 +68,12 @@ main() {
   fi
   stop_background_watchers
 
-  # Run backup testing hook if enabled (AFTER load test completes)
-  if [[ "$RUN_BACKUP_TEST_HOOK" == "true" ]]; then
-    # Source and run backup tests (DWOC already configured before load test)
-    source test-devworkspace-controller-load/backup/run-backup-tests.sh
-    run_backup_tests \
-      "$LOAD_TEST_NAMESPACE" \
-      "$REGISTRY_PATH" \
-      "$DWOC_CONFIG_TYPE" \
-      "$SEPARATE_NAMESPACES" \
-      "$REGISTRY_SECRET" \
-      "$DWO_NAMESPACE" \
-      "$BACKUP_WAIT_MINUTES"
+  # Only delete namespace if SKIP_CLEANUP is not enabled
+  if [[ "$SKIP_CLEANUP" != "true" ]]; then
+    delete_namespace
+  else
+    echo "ℹ️  Skipping namespace deletion - SKIP_CLEANUP is enabled"
   fi
-
-  delete_namespace
 }
 
 # ----------- Helper Functions -----------
@@ -166,11 +115,6 @@ Options:
   --run-with-eclipse-che <true|false>         Whether these tests are supposed to be run with Eclipse Che (If yes additional certificates are mounted)
   --che-cluster-name <string>                 CheCluster name (auto-discovered if not specified)
   --che-namespace <string>                    CheCluster namespace (auto-detected: openshift-operators on OpenShift, eclipse-che otherwise)
-  --run-backup-test-hook <true|false>         Run backup testing hook after load test completes (default: false)
-  --dwoc-config-type <correct|incorrect>      DWOC configuration type for backup testing (default: correct)
-  --registry-path <string>                    Registry path for backup images (e.g., quay.io/username)
-  --registry-secret <string>                  Registry secret name for authentication
-  --backup-wait-minutes <int>                 How long to wait for backup Jobs to complete (default: 30)
   -h, --help                                  Show this help message
 EOF
 }
@@ -208,16 +152,6 @@ parse_arguments() {
         CHE_CLUSTER_NAME="$2"; shift 2;;
       --che-namespace)
         CHE_NAMESPACE="$2"; shift 2;;
-      --run-backup-test-hook)
-        RUN_BACKUP_TEST_HOOK="$2"; shift 2;;
-      --dwoc-config-type)
-        DWOC_CONFIG_TYPE="$2"; shift 2;;
-      --registry-path)
-        REGISTRY_PATH="$2"; shift 2;;
-      --registry-secret)
-        REGISTRY_SECRET="$2"; shift 2;;
-      --backup-wait-minutes)
-        BACKUP_WAIT_MINUTES="$2"; shift 2;;
       -h|--help)
         print_help; exit 0;;
       *)
@@ -505,7 +439,7 @@ run_k6_binary_test() {
     DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS="${DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS}" \
     DELETE_DEVWORKSPACE_AFTER_READY="${DELETE_DEVWORKSPACE_AFTER_READY}" \
     MAX_DEVWORKSPACES="${MAX_DEVWORKSPACES}" \
-    RUN_BACKUP_TEST_HOOK="${RUN_BACKUP_TEST_HOOK}" \
+    SKIP_CLEANUP="${SKIP_CLEANUP}" \
     k6 run "${K6_SCRIPT}"; then
     echo "✅ k6 load test completed successfully"
   else
