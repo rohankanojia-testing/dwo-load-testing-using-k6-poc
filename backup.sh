@@ -1,41 +1,28 @@
 #!/bin/bash
-# backup.sh
-# Usage: ./backup.sh <max_devworkspaces>
-# Example: ./backup.sh 2000
 #
-# Runs backup load testing with DWOC configuration set BEFORE load test execution
+# backup.sh - Simple wrapper for backup load testing
+#
+# Usage:
+#   ./backup.sh [MAX_DEVWORKSPACES] [BACKUP_MONITOR_DURATION] [LOAD_TEST_NAMESPACE] [DWO_NAMESPACE] [REGISTRY_PATH] [REGISTRY_SECRET]
+#
+# Examples:
+#   ./backup.sh 15 30
+#   ./backup.sh 20 45 loadtest-devworkspaces openshift-operators quay.io/myuser my-secret
+#
 
-# Default max devworkspaces if not provided
-MAX_DEVWORKSPACES=${1:-50}
+set -euo pipefail
 
-# Adjust VU count relative to devworkspaces
-# Example rule: 1 VU per 4 devworkspaces (tweak as needed)
-MAX_VUS=$(( MAX_DEVWORKSPACES / 4 ))
+MAX_DEVWORKSPACES=${1:-15}
+BACKUP_MONITOR_DURATION=${2:-30}
+LOAD_TEST_NAMESPACE=${3:-loadtest-devworkspaces}
+DWO_NAMESPACE=${4:-openshift-operators}
+REGISTRY_PATH=${5:-quay.io/rokumar}
+REGISTRY_SECRET=${6:-quay-push-secret}
 
-echo "Running backup load test with --max-devworkspaces=$MAX_DEVWORKSPACES and --max-vus=$MAX_VUS"
-
-# Check for required environment variables
-if [[ -z "${QUAY_USERNAME:-}" ]] || [[ -z "${QUAY_PASSWORD:-}" ]]; then
-  echo "⚠️  Warning: QUAY_USERNAME and QUAY_PASSWORD environment variables not set"
-  echo "   Ensure the registry secret exists or set these variables:"
-  echo "   export QUAY_USERNAME=your-username"
-  echo "   export QUAY_PASSWORD=your-password"
-  echo ""
-fi
-
-# Run backup load test using runk6.sh with backup testing enabled
-bash test-devworkspace-controller-load/runk6.sh \
-  --mode binary \
-  --run-with-eclipse-che false \
-  --max-vus ${MAX_VUS} \
-  --create-automount-resources true \
-  --max-devworkspaces ${MAX_DEVWORKSPACES} \
-  --devworkspace-ready-timeout-seconds 3600 \
-  --delete-devworkspace-after-ready false \
-  --separate-namespaces false \
-  --run-backup-test-hook true \
-  --registry-path quay.io/rokumar \
-  --dwoc-config-type correct \
-  --registry-secret quay-push-secret \
-  --backup-wait-minutes 30 \
-  --test-duration-minutes 40
+exec make test_backup \
+  MAX_DEVWORKSPACES="${MAX_DEVWORKSPACES}" \
+  BACKUP_MONITOR_DURATION="${BACKUP_MONITOR_DURATION}" \
+  LOAD_TEST_NAMESPACE="${LOAD_TEST_NAMESPACE}" \
+  DWO_NAMESPACE="${DWO_NAMESPACE}" \
+  REGISTRY_PATH="${REGISTRY_PATH}" \
+  REGISTRY_SECRET="${REGISTRY_SECRET}"

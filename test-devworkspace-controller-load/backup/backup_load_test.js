@@ -25,11 +25,6 @@ import {
   checkDevWorkspaceOperatorMetrics,
   checkEtcdMetrics,
   createFilteredSummaryData,
-  generateDevWorkspaceToCreate,
-  doHttpPostDevWorkspaceCreate,
-  createNamespace,
-  createDevWorkspace,
-  waitForWorkspaceReady,
 } from '../../common/utils.js';
 
 const inCluster = __ENV.IN_CLUSTER === 'true';
@@ -39,13 +34,7 @@ const useSeparateNamespaces = __ENV.SEPARATE_NAMESPACES === "true";
 const operatorNamespace = __ENV.DWO_NAMESPACE || 'openshift-operators';
 const loadTestNamespace = __ENV.LOAD_TEST_NAMESPACE || "loadtest-devworkspaces";
 const backupMonitorDurationMinutes = Number(__ENV.BACKUP_MONITOR_DURATION_MINUTES || 30);
-const maxDevWorkspaces = Number(__ENV.MAX_DEVWORKSPACES || 50);
-const devWorkspaceLink = __ENV.DEVWORKSPACE_LINK || "https://gist.githubusercontent.com/rohanKanojia/92d0c2a2896d70c6e79dca73254e0b18/raw/bb078cbbecfcdcb5f7307ffc4c16e6e815591429/dw-minimal-per-workspace-storage.json";
-const devWorkspaceReadyTimeout = Number(__ENV.DEV_WORKSPACE_READY_TIMEOUT_IN_SECONDS || 600);
-const pollWaitInterval = 10; // seconds between workspace status polls
 const backupJobLabel = "controller.devfile.io/backup-job=true";
-const labelType = "test-type";
-const labelKey = "load-test";
 let ETCD_NAMESPACE = 'openshift-etcd';
 let ETCD_POD_NAME_PATTERN = 'etcd';
 const ETCD_POD_SELECTOR = `app=${ETCD_POD_NAME_PATTERN}`;
@@ -60,12 +49,11 @@ export const options = {
       executor: 'per-vu-iterations',
       vus: 1,
       iterations: 1,
-      maxDuration: `${devWorkspaceReadyTimeout / 60 + backupMonitorDurationMinutes + 30}m`,
+      maxDuration: `${backupMonitorDurationMinutes + 30}m`,
       exec: 'runBackupLoadTest',
     },
   },
   thresholds: {
-    'setup_workspaces_created': ['count>0'],
     'backup_jobs_total': ['count>0'],
     'backup_jobs_succeeded': ['count>0'],
     'backup_jobs_failed': ['count==0'],
@@ -96,13 +84,6 @@ const operatorMemViolations = new Counter('operator_mem_violations');
 const operatorPodRestarts = new Gauge('operator_pod_restarts_total');
 const etcdPodRestarts = new Gauge('etcd_pod_restarts_total');
 
-// Setup metrics
-const setupWorkspacesCreated = new Counter('setup_workspaces_created');
-const setupWorkspacesReady = new Counter('setup_workspaces_ready');
-const setupWorkspacesFailed = new Counter('setup_workspaces_failed');
-const setupDuration = new Trend('setup_duration');
-const setupWorkspaceReadyDuration = new Trend('setup_workspace_ready_duration');
-
 const maxCpuMillicores = 250;
 const maxMemoryBytes = 200 * 1024 * 1024;
 
@@ -111,196 +92,30 @@ export function setup() {
   ETCD_NAMESPACE = clusterInfo.etcdNamespace;
   ETCD_POD_NAME_PATTERN = clusterInfo.etcdPodPattern;
 
-  console.log("======================================");
-  console.log("Backup Load Test Configuration");
-  console.log("======================================");
-  console.log(`Load Test Namespace: ${loadTestNamespace}`);
-  console.log(`Separate Namespaces: ${useSeparateNamespaces}`);
-  console.log(`Operator Namespace: ${operatorNamespace}`);
-  console.log(`Monitor Duration: ${backupMonitorDurationMinutes} minutes`);
-  console.log(`ETCD Namespace: ${ETCD_NAMESPACE}`);
-  console.log(`ETCD Pod Pattern: ${ETCD_POD_NAME_PATTERN}`);
-  console.log("======================================");
-
   return {
     startTime: Date.now(),
   };
 }
 
 export function runBackupLoadTest(data) {
-  // Phase 1: Create and wait for workspaces
-  createWorkspacesSetup(data);
+  console.log("\n======================================");
+  console.log("Backup Load Test - Using Existing Workspaces");
+  console.log("======================================\n");
 
-  // Phase 2: Stop workspaces and monitor backups
+  // Stop workspaces and monitor backups
   stopWorkspacesAndMonitorBackups(data);
 }
 
-function createWorkspacesSetup(data) {
-  console.log("\n======================================");
-  console.log("Phase 1: Creating DevWorkspaces");
-  console.log("======================================\n");
-  console.log(`Creating ${maxDevWorkspaces} DevWorkspaces...`);
-  console.log(`Namespace mode: ${useSeparateNamespaces ? 'separate namespaces' : 'single namespace'}`);
-  console.log(`Using template: ${devWorkspaceLink}`);
-  console.log(`Ready timeout: ${devWorkspaceReadyTimeout}s\n`);
-
-  const setupStart = Date.now();
-  const workspaces = [];
-
-  // Create single namespace if not using separate namespaces
-  if (!useSeparateNamespaces) {
-    console.log(`Creating single namespace: ${loadTestNamespace}`);
-    if (!createNamespace(apiServer, headers, loadTestNamespace)) {
-      console.warn(`  ⚠️  Namespace may already exist or failed to create (continuing anyway)`);
-    }
-  }
-
-  // Step 1: Create all workspaces at once
-  console.log(`\nStep 1: Creating all workspaces in ${useSeparateNamespaces ? 'separate namespaces' : 'single namespace'}...`);
-  for (let i = 0; i < maxDevWorkspaces; i++) {
-    const namespace = useSeparateNamespaces ? `${loadTestNamespace}-${i}` : loadTestNamespace;
-
-    // Create namespace if using separate namespaces mode
-    if (useSeparateNamespaces) {
-      if (!createNamespace(apiServer, headers, namespace)) {
-        console.error(`  [${i + 1}/${maxDevWorkspaces}] Failed to create namespace ${namespace}`);
-        continue;
-      }
-    }
-
-    // Generate workspace manifest
-    const manifest = generateDevWorkspaceToCreate(1, i, namespace);
-    const workspaceName = manifest.metadata.name;
-
-    // Create workspace
-    if (!createDevWorkspace(apiServer, headers, manifest, namespace)) {
-      console.error(`  [${i + 1}/${maxDevWorkspaces}] Failed to create workspace`);
-      continue;
-    }
-
-    workspaces.push({
-      name: workspaceName,
-      namespace: namespace,
-      status: 'creating',
-      createTime: Date.now()
-    });
-
-    setupWorkspacesCreated.add(1);
-  }
-
-  const createdCount = workspaces.length;
-  console.log(`Created ${createdCount} workspaces\n`);
-
-  if (createdCount === 0) {
-    throw new Error("Failed to create any workspaces");
-  }
-
-  // Step 2: Wait for workspaces to become ready
-  console.log("Step 2: Waiting for workspaces to become ready...");
-  const waitStart = Date.now();
-  const maxWaitTime = devWorkspaceReadyTimeout * 1000; // Convert to milliseconds
-  let readyCount = 0;
-  let failedCount = 0;
-  let pollIteration = 0;
-
-  while (Date.now() - waitStart < maxWaitTime) {
-    pollIteration++;
-    let stillCreating = 0;
-
-    // Poll all workspaces that are not yet ready or failed
-    for (const ws of workspaces) {
-      if (ws.status !== 'ready' && ws.status !== 'failed') {
-        const dwUrl = `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${ws.namespace}/devworkspaces/${ws.name}`;
-        const res = http.get(dwUrl, { headers, timeout: '30s' });
-
-        if (res.status === 200) {
-          try {
-            const body = JSON.parse(res.body);
-            const phase = body?.status?.phase;
-
-            if (phase === 'Ready' || phase === 'Running') {
-              ws.status = 'ready';
-              const duration = Date.now() - ws.createTime;
-              setupWorkspaceReadyDuration.add(duration);
-              readyCount++;
-              setupWorkspacesReady.add(1);
-              console.log(`  ✅ ${ws.namespace}/${ws.name} ready in ${(duration / 1000).toFixed(1)}s`);
-            } else if (phase === 'Failing' || phase === 'Failed') {
-              ws.status = 'failed';
-              failedCount++;
-              setupWorkspacesFailed.add(1);
-              console.error(`  ❌ ${ws.namespace}/${ws.name} failed with phase: ${phase}`);
-            } else {
-              stillCreating++;
-            }
-          } catch (e) {
-            console.error(`  Failed to parse status for ${ws.name}: ${e.message}`);
-          }
-        }
-      }
-    }
-
-    // Log progress every 10 iterations (100 seconds)
-    if (pollIteration % 10 === 0) {
-      const elapsed = Math.floor((Date.now() - waitStart) / 1000);
-      console.log(`  [${elapsed}s] Ready: ${readyCount}, Failed: ${failedCount}, Creating: ${stillCreating}`);
-    }
-
-    // Check if we have enough ready workspaces (90% threshold)
-    if (readyCount >= createdCount * 0.9) {
-      console.log(`\n✅ Reached target: ${readyCount}/${createdCount} (${(readyCount / createdCount * 100).toFixed(1)}%) workspaces ready`);
-      break;
-    }
-
-    // Check if all workspaces are in terminal state
-    if (stillCreating === 0) {
-      console.log(`\n⚠️  All workspaces reached terminal state`);
-      break;
-    }
-
-    sleep(pollWaitInterval);
-  }
-
-  const setupTime = Date.now() - setupStart;
-  setupDuration.add(setupTime);
-
-  console.log("\n======================================");
-  console.log("Setup Summary");
-  console.log("======================================");
-  console.log(`Total Created: ${createdCount}`);
-  console.log(`Ready: ${readyCount} (${(readyCount / createdCount * 100).toFixed(1)}%)`);
-  console.log(`Failed: ${failedCount} (${(failedCount / createdCount * 100).toFixed(1)}%)`);
-  console.log(`Still Creating: ${createdCount - readyCount - failedCount}`);
-  console.log(`Setup Duration: ${(setupTime / 1000 / 60).toFixed(1)} minutes`);
-  console.log("======================================\n");
-
-  // Verify we have at least 90% ready
-  const readyRate = readyCount / createdCount;
-  if (readyRate < 0.9) {
-    const errorMsg = `Setup failed: Only ${readyCount}/${createdCount} (${(readyRate * 100).toFixed(1)}%) workspaces ready. Need at least 90%.`;
-    console.error(errorMsg);
-    throw new Error(errorMsg);
-  }
-
-  console.log("Waiting 30 seconds for workspaces to stabilize...");
-  sleep(30);
-
-  console.log("✅ Setup complete! Proceeding to backup monitoring...\n");
-}
-
 function stopWorkspacesAndMonitorBackups(data) {
-  console.log("\n======================================");
-  console.log("Starting Backup Load Test");
-  console.log("======================================\n");
-
   // Step 1: Get all DevWorkspaces
-  console.log("Step 1: Discovering DevWorkspaces to stop...");
+  console.log("Step 1: Discovering existing DevWorkspaces...");
   const devWorkspaces = getAllDevWorkspaces();
   console.log(`Found ${devWorkspaces.length} DevWorkspaces\n`);
 
   if (devWorkspaces.length === 0) {
-    console.error("No DevWorkspaces found. Please run a load test first to create workspaces.");
-    return;
+    const errorMsg = "No DevWorkspaces found. Workspaces should have been created in Phase 2.";
+    console.error(errorMsg);
+    throw new Error(errorMsg);
   }
 
   // Step 2: Stop all workspaces
@@ -581,11 +396,6 @@ function checkSystemEtcdMetrics() {
 
 export function handleSummary(data) {
   const allowedMetrics = [
-    'setup_workspaces_created',
-    'setup_workspaces_ready',
-    'setup_workspaces_failed',
-    'setup_duration',
-    'setup_workspace_ready_duration',
     'backup_jobs_total',
     'backup_jobs_succeeded',
     'backup_jobs_failed',

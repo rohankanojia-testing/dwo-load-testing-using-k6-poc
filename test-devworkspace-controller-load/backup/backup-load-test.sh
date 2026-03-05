@@ -65,7 +65,7 @@ SKIP_CLEANUP=true bash "${SCRIPT_DIR}/../runk6.sh" \
   --max-vus "${MAX_VUS}" \
   --separate-namespaces false \
   --delete-devworkspace-after-ready false \
-  --devworkspace-link "https://gist.githubusercontent.com/rohanKanojia/264b3709a34a8e1d42e2a88f5eaf5af3/raw/55ecd33195985aad5b23af62ed34a7cc4255115e/code-latest.json" || true
+  --devworkspace-link "https://gist.githubusercontent.com/rohanKanojia/fa3c9a5524d47e5ec2e064a41b93592c/raw/f52464e444f76fe3e2bb22a5202d24a916e0df3a/dw-minimal-custom-dwoc.json" || true
 
 # Verify DevWorkspaces created
 DW_COUNT=$(kubectl get dw -n "$LOAD_TEST_NAMESPACE" --no-headers 2>/dev/null | wc -l || echo "0")
