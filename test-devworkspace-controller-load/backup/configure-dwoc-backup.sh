@@ -4,10 +4,28 @@ set -euo pipefail
 log_info()    { echo -e "ℹ️  $*" >&2; }
 log_success() { echo -e "✅ $*" >&2; }
 log_error()   { echo -e "❌ $*" >&2; }
+log_warning() { echo -e "⚠️  $*" >&2; }
 
 # Configuration
 DWO_CONFIG_NAME="${DWO_CONFIG_NAME:-devworkspace-operator-config}"
 DWO_NAMESPACE="${DWO_NAMESPACE:-openshift-operators}"
+
+# Source the setup-backup-secret.sh script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/setup-backup-secret.sh"
+
+# Create registry secret in operator namespace if it doesn't exist
+create_registry_secret_if_needed() {
+  local registry_secret="$1"
+  local registry_path="$2"
+
+  # Extract registry server from path (e.g., quay.io from quay.io/username)
+  local registry_server
+  registry_server=$(echo "$registry_path" | cut -d'/' -f1)
+
+  # Use the existing setup_backup_registry_secret function
+  setup_backup_registry_secret "$registry_secret" "$DWO_NAMESPACE" "$registry_server"
+}
 
 # Apply correct DWOC configuration for backup testing
 apply_correct_dwoc_config() {
@@ -17,6 +35,9 @@ apply_correct_dwoc_config() {
   log_info "Applying correct DWOC backup configuration..."
   log_info "Registry path: ${registry_path}"
   log_info "Registry secret: ${registry_secret}"
+
+  # Ensure registry secret exists in operator namespace
+  create_registry_secret_if_needed "$registry_secret" "$registry_path"
 
   if kubectl get devworkspaceoperatorconfig "$DWO_CONFIG_NAME" -n "$DWO_NAMESPACE" >/dev/null 2>&1; then
     # Config exists, patch it
@@ -67,6 +88,9 @@ apply_incorrect_dwoc_config() {
   log_info "Original registry path: ${registry_path}"
   log_info "Incorrect registry path: ${incorrect_path}"
   log_info "Registry secret: ${registry_secret}"
+
+  # Ensure registry secret exists in operator namespace (use original path for secret creation)
+  create_registry_secret_if_needed "$registry_secret" "$registry_path"
 
   if kubectl get devworkspaceoperatorconfig "$DWO_CONFIG_NAME" -n "$DWO_NAMESPACE" >/dev/null 2>&1; then
     # Config exists, patch it
