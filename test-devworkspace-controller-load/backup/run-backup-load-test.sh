@@ -235,24 +235,10 @@ cleanup_devworkspaces() {
     dw_count=$(kubectl get dw -n "$LOAD_TEST_NAMESPACE" --no-headers 2>/dev/null | wc -l || echo "0")
 
     if [[ "$dw_count" -gt 0 ]]; then
-      log_info "Deleting ${dw_count} DevWorkspaces in namespace ${LOAD_TEST_NAMESPACE}..."
       kubectl delete dw --all -n "${LOAD_TEST_NAMESPACE}" --ignore-not-found --wait=false
     else
       log_info "No DevWorkspaces found to delete"
     fi
-  fi
-}
-
-cleanup_backup_jobs() {
-  log_info "Cleaning up backup Jobs..."
-  local job_count
-  job_count=$(kubectl get jobs -A -l "controller.devfile.io/backup-job=true" --no-headers 2>/dev/null | wc -l || echo "0")
-
-  if [[ "$job_count" -gt 0 ]]; then
-    log_info "Deleting ${job_count} backup Jobs..."
-    kubectl delete jobs -A -l "controller.devfile.io/backup-job=true" --ignore-not-found --wait=false
-  else
-    log_info "No backup Jobs found to delete"
   fi
 }
 
@@ -298,32 +284,6 @@ run_k6_binary_test() {
   fi
 }
 
-collect_final_status() {
-  log_info "Collecting final backup job status..."
-
-  local total
-  total=$(kubectl get jobs -A -l "controller.devfile.io/backup-job=true" --no-headers 2>/dev/null | wc -l || echo "0")
-
-  local succeeded
-  succeeded=$(kubectl get jobs -A -l "controller.devfile.io/backup-job=true" \
-    -o jsonpath='{range .items[?(@.status.succeeded==1)]}{.metadata.name}{"\n"}{end}' 2>/dev/null | wc -l || echo "0")
-
-  local failed
-  failed=$(kubectl get jobs -A -l "controller.devfile.io/backup-job=true" \
-    -o jsonpath='{range .items[?(@.status.failed>=1)]}{.metadata.name}{"\n"}{end}' 2>/dev/null | wc -l || echo "0")
-
-  echo ""
-  log_info "========================================"
-  log_info "Final Backup Job Status"
-  log_info "========================================"
-  log_info "Total Jobs: $total"
-  log_info "Succeeded: $succeeded"
-  log_info "Failed: $failed"
-  log_info "Running/Pending: $((total - succeeded - failed))"
-  log_info "========================================"
-  echo ""
-}
-
 # ----------- Main Execution Flow -----------
 
 main() {
@@ -354,20 +314,10 @@ main() {
   fi
 
   stop_background_watchers
-  collect_final_status
-
-  log_success "========================================"
-  log_success "Backup Load Test Completed"
-  log_success "========================================"
-  echo ""
-  log_info "Report available:"
-  log_info "  - backup-load-test-report.html (k6 HTML report with all metrics)"
-  echo ""
 
   log_info "========================================"
   log_info "Cleanup"
   log_info "========================================"
-  cleanup_backup_jobs
   cleanup_devworkspaces
   delete_namespace
   cleanup_rbac

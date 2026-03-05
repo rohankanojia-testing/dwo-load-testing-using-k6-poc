@@ -19,7 +19,7 @@ DWO_NAMESPACE=${4:-openshift-operators}
 REGISTRY_PATH=${5:-quay.io/rokumar}
 REGISTRY_SECRET=${6:-quay-push-secret}
 
-exec make test_backup \
+exec make test_backup_incorrect \
   MAX_DEVWORKSPACES="${MAX_DEVWORKSPACES}" \
   BACKUP_MONITOR_DURATION="${BACKUP_MONITOR_DURATION}" \
   LOAD_TEST_NAMESPACE="${LOAD_TEST_NAMESPACE}" \

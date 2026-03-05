@@ -57,6 +57,7 @@ export const options = {
     'backup_jobs_total': ['count>0'],
     'backup_jobs_succeeded': ['count>0'],
     'backup_jobs_failed': ['count==0'],
+    'backup_pods_total': ['count>0'],
     'workspaces_stopped': ['count>0'],
     'workspaces_backed_up': ['count>0'],
     'backup_success_rate': ['value>=0.95'],
@@ -71,6 +72,7 @@ const backupJobsTotal = new Counter('backup_jobs_total');
 const backupJobsSucceeded = new Counter('backup_jobs_succeeded');
 const backupJobsFailed = new Counter('backup_jobs_failed');
 const backupJobsRunning = new Gauge('backup_jobs_running');
+const backupPodsTotal = new Counter('backup_pods_total');
 const workspacesStopped = new Counter('workspaces_stopped');
 const workspacesBackedUp = new Counter('workspaces_backed_up');
 const backupSuccessRate = new Gauge('backup_success_rate');
@@ -189,7 +191,6 @@ function stopAllDevWorkspaces(devWorkspaces) {
 
     if (res.status === 200) {
       stoppedCount++;
-      console.log(`  Stopped: ${namespace}/${name}`);
     } else {
       console.warn(`  Failed to stop ${namespace}/${name}: ${res.status}`);
     }
@@ -237,6 +238,7 @@ function getBackupJobMetrics() {
   let succeeded = 0;
   let failed = 0;
   let running = 0;
+  let totalPods = 0;
 
   for (const job of jobs) {
     const status = job.status || {};
@@ -248,6 +250,12 @@ function getBackupJobMetrics() {
     } else {
       running++;
     }
+
+    // Track pods created by this job
+    const activePods = status.active || 0;
+    const succeededPods = status.succeeded || 0;
+    const failedPods = status.failed || 0;
+    totalPods += activePods + succeededPods + failedPods;
   }
 
   return {
@@ -255,6 +263,7 @@ function getBackupJobMetrics() {
     succeeded,
     failed,
     running,
+    totalPods,
     jobs,
   };
 }
@@ -262,14 +271,23 @@ function getBackupJobMetrics() {
 function monitorBackupJobsAndMetrics(durationMinutes) {
   const endTime = Date.now() + (durationMinutes * 60 * 1000);
   let iteration = 0;
+  let previousTotal = 0;
+  let previousPods = 0;
 
   while (Date.now() < endTime) {
     iteration++;
     const metrics = getBackupJobMetrics();
 
-    // Update counters (only track total once per job)
-    if (iteration === 1) {
-      backupJobsTotal.add(metrics.total);
+    // Update counters (track new jobs as they are created)
+    if (metrics.total > previousTotal) {
+      backupJobsTotal.add(metrics.total - previousTotal);
+      previousTotal = metrics.total;
+    }
+
+    // Update counters (track new pods as they are created)
+    if (metrics.totalPods > previousPods) {
+      backupPodsTotal.add(metrics.totalPods - previousPods);
+      previousPods = metrics.totalPods;
     }
 
     // Update gauges
@@ -280,8 +298,6 @@ function monitorBackupJobsAndMetrics(durationMinutes) {
       const successRate = metrics.succeeded / metrics.total;
       backupSuccessRate.add(successRate);
     }
-
-    console.log(`  [Monitor ${iteration}] Jobs: Total=${metrics.total}, Succeeded=${metrics.succeeded}, Failed=${metrics.failed}, Running=${metrics.running}`);
 
     // Check operator and etcd metrics
     checkOperatorMetrics();
@@ -297,9 +313,6 @@ function monitorBackupJobsAndMetrics(durationMinutes) {
 
       break;
     }
-
-    const remainingSeconds = Math.floor((endTime - Date.now()) / 1000);
-    console.log(`  Monitoring... ${remainingSeconds}s remaining`);
 
     sleep(monitorPollInterval);
   }
@@ -400,6 +413,7 @@ export function handleSummary(data) {
     'backup_jobs_succeeded',
     'backup_jobs_failed',
     'backup_jobs_running',
+    'backup_pods_total',
     'workspaces_stopped',
     'workspaces_backed_up',
     'backup_success_rate',
