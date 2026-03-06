@@ -8,8 +8,8 @@
 # 3. Run backup monitoring
 # 4. Cleanup all resources
 #
-# Usage: ./backup-load-test.sh <max_devworkspaces> <backup_monitor_duration> <namespace> <dwo_namespace> <registry_path> <registry_secret> <dwoc_config_type>
-# Example: ./backup-load-test.sh 15 30 loadtest-devworkspaces openshift-operators quay.io/rokumar quay-push-secret correct
+# Usage: ./backup-load-test.sh <max_devworkspaces> <backup_monitor_duration> <namespace> <dwo_namespace> <registry_path> <registry_secret> <dwoc_config_type> <separate_namespaces>
+# Example: ./backup-load-test.sh 15 30 loadtest-devworkspaces openshift-operators quay.io/rokumar quay-push-secret correct false
 
 set -euo pipefail
 
@@ -23,6 +23,7 @@ DWO_NAMESPACE=${4:-openshift-operators}
 REGISTRY_PATH=${5:-quay.io/rokumar}
 REGISTRY_SECRET=${6:-quay-push-secret}
 DWOC_CONFIG_TYPE=${7:-correct}
+SEPARATE_NAMESPACE=${8:-false}
 
 echo "========================================"
 echo "Backup Load Testing"
@@ -34,6 +35,7 @@ echo "DWO Namespace: $DWO_NAMESPACE"
 echo "Registry Path: $REGISTRY_PATH"
 echo "Registry Secret: $REGISTRY_SECRET"
 echo "DWOC Config Type: $DWOC_CONFIG_TYPE"
+echo "Separate Namespaces: $SEPARATE_NAMESPACE"
 echo "========================================"
 echo ""
 
@@ -63,12 +65,17 @@ SKIP_CLEANUP=true bash "${SCRIPT_DIR}/../runk6.sh" \
   --dwo-namespace "${LOAD_TEST_NAMESPACE}" \
   --max-devworkspaces "${MAX_DEVWORKSPACES}" \
   --max-vus "${MAX_VUS}" \
-  --separate-namespaces false \
+  --separate-namespaces "${SEPARATE_NAMESPACE}" \
   --delete-devworkspace-after-ready false \
   --devworkspace-link "https://gist.githubusercontent.com/rohanKanojia/fa3c9a5524d47e5ec2e064a41b93592c/raw/f52464e444f76fe3e2bb22a5202d24a916e0df3a/dw-minimal-custom-dwoc.json" || true
 
 # Verify DevWorkspaces created
-DW_COUNT=$(kubectl get dw -n "$LOAD_TEST_NAMESPACE" --no-headers 2>/dev/null | wc -l || echo "0")
+if [[ "$SEPARATE_NAMESPACE" == "true" ]]; then
+  DW_COUNT=$(kubectl get dw --all-namespaces -l load-test=test-type --no-headers 2>/dev/null | wc -l || echo "0")
+else
+  DW_COUNT=$(kubectl get dw -n "$LOAD_TEST_NAMESPACE" --no-headers 2>/dev/null | wc -l || echo "0")
+fi
+
 if [[ $DW_COUNT -eq 0 ]]; then
   echo "❌ No DevWorkspaces found!"
   exit 1
@@ -86,7 +93,7 @@ sleep 10
 bash "${SCRIPT_DIR}/run-backup-load-test.sh" \
   --mode binary \
   --namespace "${LOAD_TEST_NAMESPACE}" \
-  --separate-namespaces false \
+  --separate-namespaces "${SEPARATE_NAMESPACE}" \
   --backup-monitor-duration "${BACKUP_MONITOR_DURATION}" \
   --dwo-namespace "${DWO_NAMESPACE}"
 

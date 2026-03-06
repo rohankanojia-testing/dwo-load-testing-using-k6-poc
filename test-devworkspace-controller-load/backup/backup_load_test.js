@@ -320,22 +320,24 @@ function monitorBackupJobsAndMetrics(durationMinutes) {
 
 function verifyBackupCoverage(devWorkspaces) {
   const jobs = getBackupJobs();
-  const backedUpWorkspaces = new Set();
+  const backedUpWorkspaceIds = new Set();
 
-  // Extract workspace names from backup job labels
+  // Extract workspace IDs from backup job labels
   for (const job of jobs) {
     const labels = job.metadata?.labels || {};
-    const workspaceName = labels['controller.devfile.io/devworkspace_name'];
+    const workspaceId = labels['controller.devfile.io/devworkspace_id'];
 
-    if (workspaceName && job.status?.succeeded === 1) {
-      backedUpWorkspaces.add(workspaceName);
+    if (workspaceId && job.status?.succeeded === 1) {
+      backedUpWorkspaceIds.add(workspaceId);
     }
   }
 
   // Count how many workspaces were backed up
   let backedUpCount = 0;
   for (const dw of devWorkspaces) {
-    if (backedUpWorkspaces.has(dw.metadata.name)) {
+    // Use bracket notation for devworkspaceId
+    const dwId = dw.status && dw.status['devworkspaceId'];
+    if (dwId && backedUpWorkspaceIds.has(dwId)) {
       backedUpCount++;
     }
   }
@@ -349,8 +351,10 @@ function verifyBackupCoverage(devWorkspaces) {
 
     // List workspaces that weren't backed up
     for (const dw of devWorkspaces) {
-      if (!backedUpWorkspaces.has(dw.metadata.name)) {
-        console.warn(`  Not backed up: ${dw.metadata.namespace}/${dw.metadata.name}`);
+      // Use bracket notation for devworkspaceId
+      const dwId = dw.status && dw.status['devworkspaceId'];
+      if (!dwId || !backedUpWorkspaceIds.has(dwId)) {
+        console.warn(`  Not backed up: ${dw.metadata.namespace}/${dw.metadata.name} (ID: ${dwId || 'unknown'})`);
       }
     }
   }
