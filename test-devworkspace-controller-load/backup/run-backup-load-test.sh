@@ -23,6 +23,7 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MODE="binary"  # or 'operator'
 LOAD_TEST_NAMESPACE="loadtest-devworkspaces"
 DWO_NAMESPACE="openshift-operators"
+DWOC_CONFIG_TYPE="correct"  # "correct", "incorrect", or "openshift-internal"
 SA_NAME="k6-backup-tester"
 CLUSTERROLE_NAME="k6-backup-role"
 ROLEBINDING_NAME="k6-backup-binding"
@@ -56,6 +57,7 @@ Options:
   --mode <operator|binary>                Mode to run the script (default: binary)
   --namespace <string>                    Namespace where DevWorkspaces exist (default: loadtest-devworkspaces)
   --dwo-namespace <string>                DevWorkspace Operator namespace (default: openshift-operators)
+  --dwoc-config-type <string>             DWOC config type: correct, incorrect, or openshift-internal (default: correct)
   --separate-namespaces <true|false>      DevWorkspaces in separate namespaces (default: false)
   --backup-monitor-duration <minutes>     How long to monitor backups (default: 30)
   -h, --help                              Show this help message
@@ -86,6 +88,8 @@ parse_arguments() {
         LOAD_TEST_NAMESPACE="$2"; shift 2;;
       --dwo-namespace)
         DWO_NAMESPACE="$2"; shift 2;;
+      --dwoc-config-type)
+        DWOC_CONFIG_TYPE="$2"; shift 2;;
       --separate-namespaces)
         SEPARATE_NAMESPACES="$2"; shift 2;;
       --backup-monitor-duration)
@@ -192,6 +196,9 @@ rules:
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods"]
     verbs: ["get", "list"]
+  - apiGroups: ["image.openshift.io"]
+    resources: ["imagestreams", "imagestreamtags"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -272,6 +279,7 @@ run_k6_binary_test() {
     KUBE_TOKEN="${KUBE_TOKEN}" \
     KUBE_API="${KUBE_API}" \
     DWO_NAMESPACE="${DWO_NAMESPACE}" \
+    DWOC_CONFIG_TYPE="${DWOC_CONFIG_TYPE}" \
     SEPARATE_NAMESPACES="${SEPARATE_NAMESPACES}" \
     LOAD_TEST_NAMESPACE="${LOAD_TEST_NAMESPACE}" \
     BACKUP_MONITOR_DURATION_MINUTES="${BACKUP_MONITOR_DURATION_MINUTES}" \
@@ -296,6 +304,7 @@ main() {
   log_info "Mode: $MODE"
   log_info "Namespace: $LOAD_TEST_NAMESPACE"
   log_info "Operator Namespace: $DWO_NAMESPACE"
+  log_info "DWOC Config Type: $DWOC_CONFIG_TYPE"
   log_info "Separate Namespaces: $SEPARATE_NAMESPACES"
   log_info "Monitor Duration: $BACKUP_MONITOR_DURATION_MINUTES minutes"
   log_info "========================================"

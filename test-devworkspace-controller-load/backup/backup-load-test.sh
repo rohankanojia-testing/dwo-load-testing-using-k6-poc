@@ -95,7 +95,8 @@ bash "${SCRIPT_DIR}/run-backup-load-test.sh" \
   --namespace "${LOAD_TEST_NAMESPACE}" \
   --separate-namespaces "${SEPARATE_NAMESPACE}" \
   --backup-monitor-duration "${BACKUP_MONITOR_DURATION}" \
-  --dwo-namespace "${DWO_NAMESPACE}"
+  --dwo-namespace "${DWO_NAMESPACE}" \
+  --dwoc-config-type "${DWOC_CONFIG_TYPE}"
 
 BACKUP_EXIT_CODE=$?
 echo ""

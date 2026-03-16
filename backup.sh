@@ -10,23 +10,23 @@
 #
 # Examples:
 #
-#   # Basic usage (defaults: incorrect DWOC, single namespace)
+#   # Basic usage (defaults: incorrect DWOC, single namespace, external registry)
 #   ./backup.sh 15 30
 #
-#   # Single namespace + correct DWOC
+#   # External registry - Single namespace + correct DWOC
 #   ./backup.sh 50 30 loadtest-devworkspaces openshift-operators quay.io/rokumar quay-push-secret correct false
 #
-#   # Single namespace + incorrect DWOC (default)
+#   # External registry - Single namespace + incorrect DWOC (default)
 #   ./backup.sh 50 30 loadtest-devworkspaces openshift-operators quay.io/rokumar quay-push-secret incorrect false
 #
-#   # Separate namespaces + correct DWOC
+#   # External registry - Separate namespaces + correct DWOC
 #   ./backup.sh 50 30 loadtest-devworkspaces openshift-operators quay.io/rokumar quay-push-secret correct true
 #
-#   # Separate namespaces + incorrect DWOC
-#   ./backup.sh 50 30 loadtest-devworkspaces openshift-operators quay.io/rokumar quay-push-secret incorrect true
+#   # OpenShift internal registry - Auto-detect registry route
+#   ./backup.sh 50 30 loadtest-devworkspaces openshift-operators "" "" openshift-internal true
 #
-#   # Full parameter specification
-#   ./backup.sh 100 45 my-loadtest my-operator-ns quay.io/rokumar quay-push-secret correct true
+#   # OpenShift internal registry - Custom registry path
+#   ./backup.sh 50 30 loadtest-devworkspaces openshift-operators "default-route-openshift-image-registry.apps-crc.testing" "" openshift-internal true
 #
 #   # Using custom quay username
 #   QUAY_USERNAME=myuser ./backup.sh 50 30
@@ -42,10 +42,19 @@ MAX_DEVWORKSPACES=${1:-15}
 BACKUP_MONITOR_DURATION=${2:-30}
 LOAD_TEST_NAMESPACE=${3:-loadtest-devworkspaces}
 DWO_NAMESPACE=${4:-openshift-operators}
-REGISTRY_PATH=${5:-quay.io/${QUAY_USERNAME}}
-REGISTRY_SECRET=${6:-quay-push-secret}
 DWOC_CONFIG_TYPE=${7:-incorrect}
 SEPARATE_NAMESPACE=${8:-false}
+
+# Set registry defaults based on config type
+if [[ "$DWOC_CONFIG_TYPE" == "openshift-internal" ]]; then
+  # For OpenShift internal registry, leave path empty to trigger auto-detection
+  REGISTRY_PATH="${5:-}"
+  REGISTRY_SECRET="${6:-}"
+else
+  # For external registry, use quay.io defaults
+  REGISTRY_PATH=${5:-quay.io/${QUAY_USERNAME}}
+  REGISTRY_SECRET=${6:-quay-push-secret}
+fi
 
 exec make test_backup \
   MAX_DEVWORKSPACES="${MAX_DEVWORKSPACES}" \

@@ -34,6 +34,7 @@ const useSeparateNamespaces = __ENV.SEPARATE_NAMESPACES === "true";
 const operatorNamespace = __ENV.DWO_NAMESPACE || 'openshift-operators';
 const loadTestNamespace = __ENV.LOAD_TEST_NAMESPACE || "loadtest-devworkspaces";
 const backupMonitorDurationMinutes = Number(__ENV.BACKUP_MONITOR_DURATION_MINUTES || 30);
+const dwocConfigType = __ENV.DWOC_CONFIG_TYPE || 'correct';
 const backupJobLabel = "controller.devfile.io/backup-job=true";
 let ETCD_NAMESPACE = 'openshift-etcd';
 let ETCD_POD_NAME_PATTERN = 'etcd';
@@ -77,6 +78,8 @@ const workspacesStopped = new Counter('workspaces_stopped');
 const workspacesBackedUp = new Counter('workspaces_backed_up');
 const backupSuccessRate = new Gauge('backup_success_rate');
 const backupJobDuration = new Trend('backup_job_duration');
+const imageStreamsCreated = new Counter('imagestreams_created');
+const imageStreamsExpected = new Counter('imagestreams_expected');
 const operatorCpu = new Trend('average_operator_cpu');
 const operatorMemory = new Trend('average_operator_memory');
 const etcdCpu = new Trend('average_etcd_cpu');
@@ -242,12 +245,19 @@ function getBackupJobMetrics() {
 
   for (const job of jobs) {
     const status = job.status || {};
+    const conditions = status.conditions || [];
 
+    // Check if job has succeeded
     if (status.succeeded === 1) {
       succeeded++;
-    } else if (status.failed && status.failed >= 1) {
+    }
+    // Check if job has permanently failed (hit backOffLimit)
+    // A job is only permanently failed when it has a Failed condition
+    else if (conditions.some(c => c.type === 'Failed' && c.status === 'True')) {
       failed++;
-    } else {
+    }
+    // Otherwise the job is still running/pending (may be retrying after pod failures)
+    else {
       running++;
     }
 
@@ -273,6 +283,7 @@ function monitorBackupJobsAndMetrics(durationMinutes) {
   let iteration = 0;
   let previousTotal = 0;
   let previousPods = 0;
+  let lastLoggedStatus = "";
 
   while (Date.now() < endTime) {
     iteration++;
@@ -299,13 +310,21 @@ function monitorBackupJobsAndMetrics(durationMinutes) {
       backupSuccessRate.add(successRate);
     }
 
+    // Log progress every 10 iterations (100 seconds) or when status changes
+    const currentStatus = `${metrics.succeeded}/${metrics.failed}/${metrics.running}`;
+    if (iteration % 10 === 0 || currentStatus !== lastLoggedStatus) {
+      const remainingMinutes = Math.ceil((endTime - Date.now()) / 60000);
+      console.log(`  [${iteration}] Jobs - Succeeded: ${metrics.succeeded}, Failed: ${metrics.failed}, Running: ${metrics.running}, Pods: ${metrics.totalPods} (${remainingMinutes}m remaining)`);
+      lastLoggedStatus = currentStatus;
+    }
+
     // Check operator and etcd metrics
     checkOperatorMetrics();
     checkSystemEtcdMetrics();
 
     // Check if all jobs are complete
     if (metrics.total > 0 && (metrics.succeeded + metrics.failed) >= metrics.total) {
-      console.log("All backup Jobs have completed or failed");
+      console.log("All backup Jobs have completed or permanently failed");
 
       // Record final counts
       backupJobsSucceeded.add(metrics.succeeded);
@@ -316,6 +335,22 @@ function monitorBackupJobsAndMetrics(durationMinutes) {
 
     sleep(monitorPollInterval);
   }
+}
+
+function getImageStreams(namespace) {
+  const url = useSeparateNamespaces
+    ? `${apiServer}/apis/image.openshift.io/v1/imagestreams`
+    : `${apiServer}/apis/image.openshift.io/v1/namespaces/${namespace}/imagestreams`;
+
+  const res = http.get(url, {headers});
+
+  if (res.status !== 200) {
+    console.warn(`Failed to get ImageStreams: ${res.status}`);
+    return [];
+  }
+
+  const data = JSON.parse(res.body);
+  return data.items || [];
 }
 
 function verifyBackupCoverage(devWorkspaces) {
@@ -358,6 +393,78 @@ function verifyBackupCoverage(devWorkspaces) {
       }
     }
   }
+
+  // Verify ImageStreams for OpenShift internal registry mode
+  if (dwocConfigType === 'openshift-internal') {
+    console.log("\nVerifying ImageStream creation for OpenShift internal registry...");
+    verifyImageStreams(devWorkspaces, backedUpWorkspaceIds);
+  }
+}
+
+function verifyImageStreams(devWorkspaces, backedUpWorkspaceIds) {
+  const imageStreamsByNamespace = new Map();
+
+  // Get ImageStreams from all relevant namespaces
+  if (useSeparateNamespaces) {
+    // Collect ImageStreams from all workspace namespaces
+    for (const dw of devWorkspaces) {
+      const namespace = dw.metadata.namespace;
+      if (!imageStreamsByNamespace.has(namespace)) {
+        const imageStreams = getImageStreams(namespace);
+        imageStreamsByNamespace.set(namespace, imageStreams);
+      }
+    }
+  } else {
+    // Single namespace mode
+    const imageStreams = getImageStreams(loadTestNamespace);
+    imageStreamsByNamespace.set(loadTestNamespace, imageStreams);
+  }
+
+  // Verify each backed-up workspace has a corresponding ImageStream
+  let imageStreamCount = 0;
+  let expectedImageStreams = 0;
+
+  for (const dw of devWorkspaces) {
+    const dwId = dw.status && dw.status['devworkspaceId'];
+
+    // Only check ImageStreams for successfully backed up workspaces
+    if (!dwId || !backedUpWorkspaceIds.has(dwId)) {
+      continue;
+    }
+
+    expectedImageStreams++;
+    const namespace = dw.metadata.namespace;
+    const dwName = dw.metadata.name;
+    const imageStreams = imageStreamsByNamespace.get(namespace) || [];
+
+    // Look for ImageStream matching the DevWorkspace
+    // ImageStream name typically matches the DevWorkspace name or ID
+    const matchingIS = imageStreams.find(is => {
+      const isName = is.metadata.name;
+      return isName === dwName || isName === dwId || isName.includes(dwName) || isName.includes(dwId);
+    });
+
+    if (matchingIS) {
+      imageStreamCount++;
+      console.log(`  ✅ ImageStream found for ${namespace}/${dwName}: ${matchingIS.metadata.name}`);
+    } else {
+      console.warn(`  ⚠️  No ImageStream found for ${namespace}/${dwName} (ID: ${dwId})`);
+      // List available ImageStreams in this namespace for debugging
+      if (imageStreams.length > 0) {
+        console.log(`     Available ImageStreams in ${namespace}:`);
+        imageStreams.forEach(is => console.log(`       - ${is.metadata.name}`));
+      }
+    }
+  }
+
+  imageStreamsCreated.add(imageStreamCount);
+  imageStreamsExpected.add(expectedImageStreams);
+
+  console.log(`\nImageStream Coverage: ${imageStreamCount}/${expectedImageStreams} ImageStreams created`);
+
+  if (imageStreamCount < expectedImageStreams) {
+    console.warn(`Warning: ${expectedImageStreams - imageStreamCount} ImageStreams are missing`);
+  }
 }
 
 function collectFinalMetrics() {
@@ -368,8 +475,9 @@ function collectFinalMetrics() {
   console.log("======================================");
   console.log(`Total Jobs: ${metrics.total}`);
   console.log(`Succeeded: ${metrics.succeeded}`);
-  console.log(`Failed: ${metrics.failed}`);
+  console.log(`Failed (hit backOffLimit): ${metrics.failed}`);
   console.log(`Running/Pending: ${metrics.running}`);
+  console.log(`Total Pods Created: ${metrics.totalPods}`);
 
   if (metrics.total > 0) {
     const successRate = ((metrics.succeeded / metrics.total) * 100).toFixed(2);
@@ -378,6 +486,28 @@ function collectFinalMetrics() {
     console.log(`Failure Rate: ${failureRate}%`);
   }
   console.log("======================================\n");
+
+  // Show details of permanently failed jobs
+  if (metrics.failed > 0) {
+    console.log("Failed Jobs Details:");
+    for (const job of metrics.jobs) {
+      const conditions = job.status?.conditions || [];
+      const failedCondition = conditions.find(c => c.type === 'Failed' && c.status === 'True');
+
+      if (failedCondition) {
+        const namespace = job.metadata.namespace;
+        const name = job.metadata.name;
+        const podFailures = job.status?.failed || 0;
+        const reason = failedCondition.reason || 'Unknown';
+        const message = failedCondition.message || 'No message';
+
+        console.log(`  ❌ ${namespace}/${name}`);
+        console.log(`     Pod failures: ${podFailures}, Reason: ${reason}`);
+        console.log(`     Message: ${message}`);
+      }
+    }
+    console.log("");
+  }
 
   // Calculate backup job durations
   for (const job of metrics.jobs) {
@@ -422,6 +552,8 @@ export function handleSummary(data) {
     'workspaces_backed_up',
     'backup_success_rate',
     'backup_job_duration',
+    'imagestreams_created',
+    'imagestreams_expected',
     'operator_cpu_violations',
     'operator_mem_violations',
     'average_operator_cpu',

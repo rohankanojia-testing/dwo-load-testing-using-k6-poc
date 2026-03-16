@@ -27,12 +27,12 @@ create_registry_secret_if_needed() {
   setup_backup_registry_secret "$registry_secret" "$DWO_NAMESPACE" "$registry_server"
 }
 
-# Apply correct DWOC configuration for backup testing
+# Apply correct DWOC configuration for backup testing (external registry)
 apply_correct_dwoc_config() {
   local registry_path="$1"
   local registry_secret="$2"
 
-  log_info "Applying correct DWOC backup configuration..."
+  log_info "Applying correct DWOC backup configuration (external registry)..."
   log_info "Registry path: ${registry_path}"
   log_info "Registry secret: ${registry_secret}"
 
@@ -47,7 +47,7 @@ config:
   workspace:
     backupCronJob:
       enable: true
-      schedule: '*/1 * * * *'
+      schedule: '*/2 * * * *'
       registry:
         authSecret: ${registry_secret}
         path: ${registry_path}
@@ -65,14 +65,81 @@ config:
   workspace:
     backupCronJob:
       enable: true
-      schedule: '*/1 * * * *'
+      schedule: '*/2 * * * *'
       registry:
         authSecret: ${registry_secret}
         path: ${registry_path}
 EOF
   fi
 
-  log_success "Correct DWOC backup configuration applied"
+  log_success "Correct DWOC backup configuration applied (external registry)"
+}
+
+# Apply DWOC configuration for OpenShift internal registry
+apply_openshift_internal_dwoc_config() {
+  local registry_path="${1:-}"
+
+  # Auto-detect OpenShift internal registry if not provided
+  if [[ -z "$registry_path" ]]; then
+    log_info "Auto-detecting OpenShift internal registry route..."
+
+    # Try to get the external route first
+    registry_path=$(kubectl get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null || true)
+
+    if [[ -z "$registry_path" ]]; then
+      # Fall back to internal service
+      log_info "External route not found, using internal service"
+      registry_path="image-registry.openshift-image-registry.svc:5000"
+    else
+      log_info "Found external route: ${registry_path}"
+    fi
+  fi
+
+  log_info "Applying DWOC backup configuration (OpenShift internal registry)..."
+  log_info "Registry path: ${registry_path}"
+  log_info "Auth: Using service account token (no secret required)"
+
+  if kubectl get devworkspaceoperatorconfig "$DWO_CONFIG_NAME" -n "$DWO_NAMESPACE" >/dev/null 2>&1; then
+    # Config exists, patch it
+    log_info "DevWorkspaceOperatorConfig exists, patching..."
+    kubectl patch devworkspaceoperatorconfig "$DWO_CONFIG_NAME" -n "$DWO_NAMESPACE" --type merge -p "
+config:
+  routing:
+    defaultRoutingClass: basic
+  workspace:
+    backupCronJob:
+      enable: true
+      schedule: '*/2 * * * *'
+      oras:
+        extraArgs: --insecure
+      registry:
+        authSecret: null
+        path: ${registry_path}
+"
+  else
+    # Config doesn't exist, create it
+    log_info "DevWorkspaceOperatorConfig not found, creating..."
+    kubectl apply -f - <<EOF
+apiVersion: controller.devfile.io/v1alpha1
+kind: DevWorkspaceOperatorConfig
+metadata:
+  name: $DWO_CONFIG_NAME
+  namespace: $DWO_NAMESPACE
+config:
+  routing:
+    defaultRoutingClass: basic
+  workspace:
+    backupCronJob:
+      enable: true
+      schedule: '*/2 * * * *'
+      oras:
+        extraArgs: --insecure
+      registry:
+        path: ${registry_path}
+EOF
+  fi
+
+  log_success "DWOC backup configuration applied (OpenShift internal registry)"
 }
 
 # Apply incorrect DWOC configuration (with typo in registry path)
@@ -100,7 +167,7 @@ config:
   workspace:
     backupCronJob:
       enable: true
-      schedule: '*/1 * * * *'
+      schedule: '*/2 * * * *'
       registry:
         authSecret: ${registry_secret}
         path: ${incorrect_path}
@@ -118,7 +185,7 @@ config:
   workspace:
     backupCronJob:
       enable: true
-      schedule: '*/1 * * * *'
+      schedule: '*/2 * * * *'
       registry:
         authSecret: ${registry_secret}
         path: ${incorrect_path}
@@ -182,9 +249,9 @@ validate_dwoc_applied() {
 
 # Main configuration function - called from backup testing hook
 configure_dwoc_for_backup() {
-  local config_type="$1"  # "correct" or "incorrect"
+  local config_type="$1"  # "correct", "incorrect", or "openshift-internal"
   local registry_path="$2"
-  local registry_secret="$3"
+  local registry_secret="${3:-}"
 
   case "$config_type" in
     correct)
@@ -193,8 +260,11 @@ configure_dwoc_for_backup() {
     incorrect)
       apply_incorrect_dwoc_config "$registry_path" "$registry_secret"
       ;;
+    openshift-internal)
+      apply_openshift_internal_dwoc_config "$registry_path"
+      ;;
     *)
-      log_error "Unknown config type: $config_type (must be 'correct' or 'incorrect')"
+      log_error "Unknown config type: $config_type (must be 'correct', 'incorrect', or 'openshift-internal')"
       return 1
       ;;
   esac
@@ -205,17 +275,27 @@ configure_dwoc_for_backup() {
 # If script is executed directly (not sourced), run with provided arguments
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   if [[ $# -lt 1 ]]; then
-    echo "Usage: $0 <correct|incorrect|reset|validate> [registry_path] [registry_secret]"
+    echo "Usage: $0 <correct|incorrect|openshift-internal|reset|validate> [registry_path] [registry_secret]"
     echo ""
     echo "Commands:"
-    echo "  correct  - Apply correct DWOC backup configuration"
-    echo "  incorrect - Apply incorrect DWOC backup configuration (typo in registry)"
-    echo "  reset - Disable backup in DWOC"
-    echo "  validate - Validate DWOC backup configuration"
+    echo "  correct            - Apply correct DWOC backup configuration (external registry)"
+    echo "  incorrect          - Apply incorrect DWOC backup configuration (typo in registry)"
+    echo "  openshift-internal - Apply DWOC backup configuration for OpenShift internal registry"
+    echo "  reset              - Disable backup in DWOC"
+    echo "  validate           - Validate DWOC backup configuration"
     echo ""
     echo "Examples:"
+    echo "  # External registry (quay.io, docker.io, etc.)"
     echo "  $0 correct quay.io/username quay-push-secret"
     echo "  $0 incorrect quay.io/username quay-push-secret"
+    echo ""
+    echo "  # OpenShift internal registry (auto-detects route)"
+    echo "  $0 openshift-internal"
+    echo ""
+    echo "  # OpenShift internal registry (custom path)"
+    echo "  $0 openshift-internal default-route-openshift-image-registry.apps-crc.testing"
+    echo ""
+    echo "  # Utility commands"
     echo "  $0 reset"
     echo "  $0 validate"
     exit 1
@@ -239,6 +319,11 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         exit 1
       fi
       apply_incorrect_dwoc_config "$1" "$2"
+      validate_dwoc_applied
+      ;;
+    openshift-internal)
+      # Registry path is optional - will auto-detect if not provided
+      apply_openshift_internal_dwoc_config "${1:-}"
       validate_dwoc_applied
       ;;
     reset)
