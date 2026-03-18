@@ -9,6 +9,7 @@ The backup load tests verify:
 - Backup success rate and reliability
 - System performance during backup operations
 - Operator and etcd resource usage
+- **Restore verification**: Workspaces can be restored from backup images (optional)
 
 ## Test Modes
 
@@ -38,6 +39,27 @@ The backup load tests verify:
   - Includes `--insecure` flag for ORAS to handle self-signed certificates
   - Supports incorrect configuration by providing invalid registry path
   - Backup schedule: configurable (default: `*/2 * * * *`)
+
+### Restore Verification
+
+After successfully backing up workspaces, the test can optionally verify that workspaces can be restored from their backups. This is controlled by the `--verify-restore` flag (enabled by default).
+
+**Restore Process:**
+1. Deletes the original DevWorkspace
+2. Recreates it with the `controller.devfile.io/restore-workspace: 'true'` attribute
+3. Monitors the workspace until it reaches `Running` state
+4. Measures restore duration and success rate
+
+**Configuration:**
+- `--verify-restore true|false` - Enable/disable restore verification (default: true)
+- `--max-restore-samples N` - Maximum number of workspaces to restore (default: 10)
+
+The restore verification uses a **sample** of backed up workspaces to keep test duration reasonable. By default, it restores up to 10 workspaces, but you can adjust this with `--max-restore-samples`.
+
+**Important:** Restore verification is **automatically skipped** when:
+- `DWOC_CONFIG_TYPE=incorrect` - Backups intentionally fail, so there are no valid images to restore
+- `VERIFY_RESTORE=false` - Explicitly disabled
+- No workspaces were successfully backed up
 
 ## Prerequisites
 
@@ -166,6 +188,45 @@ make test_backup \
   BACKUP_SCHEDULE="0 * * * *"
 ```
 
+### With Restore Verification (Default)
+
+By default, restore verification is enabled and restores up to 10 workspaces:
+
+```bash
+make test_backup \
+  MAX_DEVWORKSPACES=50 \
+  BACKUP_MONITOR_DURATION=30 \
+  REGISTRY_PATH=quay.io/your-username \
+  REGISTRY_SECRET=your-registry-secret
+# VERIFY_RESTORE defaults to true, MAX_RESTORE_SAMPLES defaults to 10
+```
+
+### Restore All Backed Up Workspaces
+
+To restore all backed up workspaces (instead of just a sample):
+
+```bash
+make test_backup \
+  MAX_DEVWORKSPACES=20 \
+  BACKUP_MONITOR_DURATION=30 \
+  REGISTRY_PATH=quay.io/your-username \
+  REGISTRY_SECRET=your-registry-secret \
+  MAX_RESTORE_SAMPLES=20
+```
+
+### Skip Restore Verification
+
+To skip restore verification and only test backup:
+
+```bash
+make test_backup \
+  MAX_DEVWORKSPACES=50 \
+  BACKUP_MONITOR_DURATION=30 \
+  REGISTRY_PATH=quay.io/your-username \
+  REGISTRY_SECRET=your-registry-secret \
+  VERIFY_RESTORE=false
+```
+
 ## Test Workflow
 
 The complete backup load test (`backup-load-test.sh`) performs these phases:
@@ -184,10 +245,17 @@ The complete backup load test (`backup-load-test.sh`) performs these phases:
    - Stops all DevWorkspaces
    - Monitors backup job creation and completion
    - Tracks metrics (jobs, pods, success rate, resource usage)
+   - Identifies successfully backed up workspaces
 
-4. **Phase 4: Cleanup**
-   - Removes backup jobs
-   - Deletes DevWorkspaces
+4. **Phase 4: Restore Verification** (optional, enabled by default)
+   - Deletes a sample of backed up workspaces
+   - Recreates them with restore attribute
+   - Monitors restore process and measures success rate
+   - Validates workspaces reach Running state
+
+5. **Phase 5: Cleanup**
+   - Removes backup jobs and restored workspaces
+   - Deletes DevWorkspaces and namespaces
    - Resets DWOC configuration
 
 ## Parameters
@@ -203,6 +271,8 @@ The complete backup load test (`backup-load-test.sh`) performs these phases:
 | `DWOC_CONFIG_TYPE` | DWOC config mode: `correct`, `incorrect`, or `openshift-internal` | `correct` |
 | `SEPARATE_NAMESPACE` | Use separate namespaces per workspace | `false` |
 | `BACKUP_SCHEDULE` | Cron schedule for backup jobs | `*/2 * * * *` |
+| `VERIFY_RESTORE` | Enable restore verification after backup | `true` |
+| `MAX_RESTORE_SAMPLES` | Maximum number of workspaces to restore for verification | `10` |
 
 ## Metrics Collected
 
@@ -219,6 +289,13 @@ The test collects comprehensive metrics:
 - `workspaces_backed_up` - Number of workspaces successfully backed up
 - `imagestreams_created` - Number of ImageStreams created (OpenShift internal registry mode only)
 - `imagestreams_expected` - Number of ImageStreams expected (OpenShift internal registry mode only)
+
+### Restore Metrics
+- `restore_workspaces_total` - Total restore attempts
+- `restore_workspaces_succeeded` - Successfully restored workspaces
+- `restore_workspaces_failed` - Failed restore attempts
+- `restore_duration` - Time taken to restore and reach Running state
+- `restore_success_rate` - Percentage of successful restores
 
 ### System Metrics
 - `average_operator_cpu` - DWO CPU usage

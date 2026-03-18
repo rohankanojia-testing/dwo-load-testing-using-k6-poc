@@ -69,7 +69,7 @@ SKIP_CLEANUP=true bash "${SCRIPT_DIR}/../runk6.sh" \
   --max-vus "${MAX_VUS}" \
   --separate-namespaces "${SEPARATE_NAMESPACE}" \
   --delete-devworkspace-after-ready false \
-  --devworkspace-link "https://gist.githubusercontent.com/rohanKanojia/fa3c9a5524d47e5ec2e064a41b93592c/raw/f52464e444f76fe3e2bb22a5202d24a916e0df3a/dw-minimal-custom-dwoc.json" || true
+  --devworkspace-link "https://gist.githubusercontent.com/rohanKanojia/fa3c9a5524d47e5ec2e064a41b93592c/raw/435161c64e6c2886788e8f947c239d76902d2dd9/dw-minimal-custom-dwoc.json" || true
 
 # Verify DevWorkspaces created
 if [[ "$SEPARATE_NAMESPACE" == "true" ]]; then
