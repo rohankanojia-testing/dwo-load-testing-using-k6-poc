@@ -105,17 +105,24 @@ export function getPodRestartCounts(apiServer, headers, namespace, labelSelector
  * @param {Object} headers - HTTP headers with authentication
  * @param {string} namespace - Kubernetes namespace
  * @param {string} labelSelector - Label selector to filter pods
- * @param {Object} restartCounterMetric - k6 Counter metric to track restarts (optional)
+ * @param {Object} restartCounterMetric - k6 Gauge metric to track restarts (optional)
+ * @param {Object} initialRestartCounts - Initial restart counts to subtract (optional, default: empty object)
  * @returns {Object} Object with totalRestarts count and details array
  */
-export function checkPodRestarts(apiServer, headers, namespace, labelSelector, restartCounterMetric = null) {
+export function checkPodRestarts(apiServer, headers, namespace, labelSelector, restartCounterMetric = null, initialRestartCounts = {}) {
     const currentRestartCounts = getPodRestartCounts(apiServer, headers, namespace, labelSelector);
 
-    Object.entries(currentRestartCounts).forEach(([, currentRestartCount]) => {
-        if (restartCounterMetric) {
-            restartCounterMetric.add(currentRestartCount);
-        }
+    let totalDelta = 0;
+    Object.entries(currentRestartCounts).forEach(([podName, currentRestartCount]) => {
+        const initialCount = initialRestartCounts[podName] || 0;
+        const delta = currentRestartCount - initialCount;
+        totalDelta += delta;
     });
+
+    if (restartCounterMetric) {
+        // For k6 Gauge metrics, add() sets the current value (not accumulative)
+        restartCounterMetric.add(totalDelta);
+    }
 }
 
 export function generateDevWorkspaceToCreate(vuId, iteration, namespace) {
@@ -257,8 +264,9 @@ export function detectClusterType(apiServer, headers) {
  * @param {Object} metrics - Metrics object with operatorCpu, operatorMemory, operatorCpuViolations, operatorMemViolations
  * @param {Object} operatorPodRestarts - Pod restart counter metric
  * @param {string} operatorPodSelector - Label selector for operator pods
+ * @param {Object} initialOperatorRestarts - Initial restart counts to subtract (optional)
  */
-export function checkDevWorkspaceOperatorMetrics(apiServer, headers, operatorNamespace, maxCpuMillicores, maxMemoryBytes, metrics, operatorPodRestarts, operatorPodSelector) {
+export function checkDevWorkspaceOperatorMetrics(apiServer, headers, operatorNamespace, maxCpuMillicores, maxMemoryBytes, metrics, operatorPodRestarts, operatorPodSelector, initialOperatorRestarts = {}) {
     const metricsUrl = `${apiServer}/apis/metrics.k8s.io/v1beta1/namespaces/${operatorNamespace}/pods`;
     const res = http.get(metricsUrl, {headers});
 
@@ -290,7 +298,7 @@ export function checkDevWorkspaceOperatorMetrics(apiServer, headers, operatorNam
         }
     }
 
-    checkPodRestarts(apiServer, headers, operatorNamespace, operatorPodSelector, operatorPodRestarts);
+    checkPodRestarts(apiServer, headers, operatorNamespace, operatorPodSelector, operatorPodRestarts, initialOperatorRestarts);
 }
 
 /**
@@ -302,8 +310,9 @@ export function checkDevWorkspaceOperatorMetrics(apiServer, headers, operatorNam
  * @param {Object} metrics - Metrics object with etcdCpu, etcdMemory
  * @param {Object} etcdPodRestarts - Pod restart counter metric
  * @param {string} etcdPodSelector - Label selector for etcd pods
+ * @param {Object} initialEtcdRestarts - Initial restart counts to subtract (optional)
  */
-export function checkEtcdMetrics(apiServer, headers, etcdNamespace, etcdPodPattern, metrics, etcdPodRestarts, etcdPodSelector) {
+export function checkEtcdMetrics(apiServer, headers, etcdNamespace, etcdPodPattern, metrics, etcdPodRestarts, etcdPodSelector, initialEtcdRestarts = {}) {
     if (!etcdNamespace || !etcdPodPattern) {
         console.warn(`[ETCD METRICS] Variables not initialized: etcdNamespace=${etcdNamespace}, etcdPodPattern=${etcdPodPattern}`);
         return;
@@ -352,7 +361,7 @@ export function checkEtcdMetrics(apiServer, headers, etcdNamespace, etcdPodPatte
         metrics.etcdMemory.add(memory / 1024 / 1024);
     }
 
-    checkPodRestarts(apiServer, headers, etcdNamespace, etcdPodSelector, etcdPodRestarts);
+    checkPodRestarts(apiServer, headers, etcdNamespace, etcdPodSelector, etcdPodRestarts, initialEtcdRestarts);
 }
 
 /**

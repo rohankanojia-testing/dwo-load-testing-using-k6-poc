@@ -57,6 +57,10 @@ let ETCD_POD_NAME_PATTERN = 'etcd';
 const ETCD_POD_SELECTOR = `app=${ETCD_POD_NAME_PATTERN}`;
 const OPERATOR_POD_SELECTOR = 'app.kubernetes.io/name=devworkspace-controller';
 
+// Parse initial restart counts from environment variables
+const initialEtcdRestarts = __ENV.INITIAL_ETCD_RESTARTS ? JSON.parse(__ENV.INITIAL_ETCD_RESTARTS) : {};
+const initialOperatorRestarts = __ENV.INITIAL_OPERATOR_RESTARTS ? JSON.parse(__ENV.INITIAL_OPERATOR_RESTARTS) : {};
+
 const headers = createAuthHeaders(token);
 
 /**
@@ -355,7 +359,7 @@ function checkOperatorMetrics() {
     operatorCpuViolations,
     operatorMemViolations,
   };
-  checkDevWorkspaceOperatorMetrics(apiServer, headers, operatorNamespace, maxCpuMillicores, maxMemoryBytes, metrics, operatorPodRestarts, OPERATOR_POD_SELECTOR);
+  checkDevWorkspaceOperatorMetrics(apiServer, headers, operatorNamespace, maxCpuMillicores, maxMemoryBytes, metrics, operatorPodRestarts, OPERATOR_POD_SELECTOR, initialOperatorRestarts);
 }
 
 function checkSystemEtcdMetrics() {
@@ -363,7 +367,7 @@ function checkSystemEtcdMetrics() {
     etcdCpu,
     etcdMemory,
   };
-  checkEtcdMetrics(apiServer, headers, ETCD_NAMESPACE, ETCD_POD_NAME_PATTERN, metrics, etcdPodRestarts, ETCD_POD_SELECTOR);
+  checkEtcdMetrics(apiServer, headers, ETCD_NAMESPACE, ETCD_POD_NAME_PATTERN, metrics, etcdPodRestarts, ETCD_POD_SELECTOR, initialEtcdRestarts);
 }
 
 function createNewNamespace(namespaceName) {

@@ -8,8 +8,8 @@
 # 3. Run backup monitoring
 # 4. Cleanup all resources
 #
-# Usage: ./backup-load-test.sh <max_devworkspaces> <backup_monitor_duration> <namespace> <dwo_namespace> <registry_path> <registry_secret> <dwoc_config_type> <separate_namespaces>
-# Example: ./backup-load-test.sh 15 30 loadtest-devworkspaces openshift-operators quay.io/rokumar quay-push-secret correct false
+# Usage: ./backup-load-test.sh <max_devworkspaces> <backup_monitor_duration> <namespace> <dwo_namespace> <registry_path> <registry_secret> <dwoc_config_type> <separate_namespaces> [backup_schedule]
+# Example: ./backup-load-test.sh 15 30 loadtest-devworkspaces openshift-operators quay.io/rokumar quay-push-secret correct false "*/2 * * * *"
 
 set -euo pipefail
 
@@ -24,6 +24,7 @@ REGISTRY_PATH=${5:-quay.io/rokumar}
 REGISTRY_SECRET=${6:-quay-push-secret}
 DWOC_CONFIG_TYPE=${7:-correct}
 SEPARATE_NAMESPACE=${8:-false}
+BACKUP_SCHEDULE="${9:-*/2 * * * *}"
 
 echo "========================================"
 echo "Backup Load Testing"
@@ -36,6 +37,7 @@ echo "Registry Path: $REGISTRY_PATH"
 echo "Registry Secret: $REGISTRY_SECRET"
 echo "DWOC Config Type: $DWOC_CONFIG_TYPE"
 echo "Separate Namespaces: $SEPARATE_NAMESPACE"
+echo "Backup Schedule: $BACKUP_SCHEDULE"
 echo "========================================"
 echo ""
 
@@ -46,7 +48,7 @@ echo "Phase 1: Configuring DWOC for Backup"
 echo "========================================"
 
 source "${SCRIPT_DIR}/configure-dwoc-backup.sh"
-configure_dwoc_for_backup "$DWOC_CONFIG_TYPE" "$REGISTRY_PATH" "$REGISTRY_SECRET"
+configure_dwoc_for_backup "$DWOC_CONFIG_TYPE" "$REGISTRY_PATH" "$REGISTRY_SECRET" "$BACKUP_SCHEDULE"
 echo ""
 
 # ============================================================================

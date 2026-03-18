@@ -22,21 +22,22 @@ The backup load tests verify:
 - **Correct Mode** (`correct`): DWOC properly configured with backup enabled, registry path, and auth secret (external registry like quay.io)
   - Pushes to external registry as OCI artifacts
   - Requires registry credentials (secret)
-  - Backup schedule: every 2 hours (`0 */2 * * *`)
+  - Backup schedule: configurable (default: `*/2 * * * *` - every 2 minutes for testing)
 
 - **Incorrect Mode** (`incorrect`): DWOC misconfigured (for testing failure scenarios)
   - Intentionally broken registry path to test failure handling
   - Jobs will retry failed pods up to backOffLimit (typically 6 retries)
   - Test waits until jobs permanently fail or monitoring duration expires
   - Useful for testing operator behavior under failure conditions and retry logic
-  - Backup schedule: every 2 hours (`0 */2 * * *`) - prevents new jobs during test
+  - Backup schedule: configurable (default: `*/2 * * * *`)
 
 - **OpenShift Internal Mode** (`openshift-internal`): DWOC configured to use OpenShift's internal image registry
   - Pushes to ImageStreamTags in the workspace namespace
   - Uses service account token for authentication (no secret required)
   - Auto-detects the registry route or uses internal service
   - Includes `--insecure` flag for ORAS to handle self-signed certificates
-  - Backup schedule: every 2 hours (`0 */2 * * *`)
+  - Supports incorrect configuration by providing invalid registry path
+  - Backup schedule: configurable (default: `*/2 * * * *`)
 
 ## Prerequisites
 
@@ -130,6 +131,41 @@ make test_backup \
   SEPARATE_NAMESPACE=true
 ```
 
+### OpenShift Internal Registry (Incorrect Configuration)
+
+Test failure scenarios with OpenShift internal registry by providing an invalid registry path:
+
+```bash
+make test_backup \
+  MAX_DEVWORKSPACES=20 \
+  BACKUP_MONITOR_DURATION=15 \
+  REGISTRY_PATH=non-existent-registry.openshift-image-registry.svc:9999 \
+  REGISTRY_SECRET="" \
+  DWOC_CONFIG_TYPE=openshift-internal \
+  SEPARATE_NAMESPACE=true
+```
+
+### Custom Backup Schedule
+
+Control when backups run using a custom cron schedule:
+
+```bash
+# Run backups every 5 minutes
+make test_backup \
+  MAX_DEVWORKSPACES=50 \
+  BACKUP_SCHEDULE="*/5 * * * *"
+
+# Disable cron during test (use impossible date - Feb 31st never occurs)
+make test_backup \
+  MAX_DEVWORKSPACES=50 \
+  BACKUP_SCHEDULE="0 0 31 2 *"
+
+# Run backups every hour
+make test_backup \
+  MAX_DEVWORKSPACES=50 \
+  BACKUP_SCHEDULE="0 * * * *"
+```
+
 ## Test Workflow
 
 The complete backup load test (`backup-load-test.sh`) performs these phases:
@@ -164,8 +200,9 @@ The complete backup load test (`backup-load-test.sh`) performs these phases:
 | `DWO_NAMESPACE` | DevWorkspace Operator namespace | `openshift-operators` |
 | `REGISTRY_PATH` | Container registry path for backups | `quay.io/rokumar` |
 | `REGISTRY_SECRET` | Secret name for registry auth | `quay-push-secret` |
-| `DWOC_CONFIG_TYPE` | DWOC config mode: `correct` or `incorrect` | `correct` |
+| `DWOC_CONFIG_TYPE` | DWOC config mode: `correct`, `incorrect`, or `openshift-internal` | `correct` |
 | `SEPARATE_NAMESPACE` | Use separate namespaces per workspace | `false` |
+| `BACKUP_SCHEDULE` | Cron schedule for backup jobs | `*/2 * * * *` |
 
 ## Metrics Collected
 

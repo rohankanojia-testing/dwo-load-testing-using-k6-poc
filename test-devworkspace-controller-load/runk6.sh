@@ -36,6 +36,15 @@ SKIP_CLEANUP="${SKIP_CLEANUP:-false}"  # Skip cleanup after load test (default: 
 
 # ----------- Helper Functions -----------
 
+get_initial_pod_restart_counts() {
+  local namespace="$1"
+  local label_selector="$2"
+
+  # Get pod restart counts as JSON object
+  kubectl get pods -n "$namespace" -l "$label_selector" -o json 2>/dev/null | \
+    jq -r '.items | map({(.metadata.name): (.status.containerStatuses[0].restartCount // 0)}) | add // {}' || echo '{}'
+}
+
 # ----------- Main Execution Flow -----------
 main() {
   parse_arguments "$@"
@@ -425,6 +434,44 @@ version_gte() {
 run_k6_binary_test() {
   echo "🚀 Running k6 load test..."
 
+  # Get initial etcd restart counts before starting test
+  echo "ℹ️  Detecting etcd namespace and getting initial restart counts..."
+  local etcd_namespace="openshift-etcd"
+  local etcd_label="app=etcd"
+
+  # Detect cluster type - check for OpenShift etcd first
+  if kubectl get namespace openshift-etcd >/dev/null 2>&1; then
+    if kubectl get pods -n openshift-etcd -l app=etcd --no-headers 2>/dev/null | grep -q .; then
+      etcd_namespace="openshift-etcd"
+      etcd_label="app=etcd"
+      echo "✅ Detected OpenShift cluster - etcd in openshift-etcd namespace"
+    fi
+  fi
+
+  # If not OpenShift, try kube-system (standard Kubernetes/k3s)
+  if [[ "$etcd_namespace" == "openshift-etcd" ]] && ! kubectl get pods -n openshift-etcd -l app=etcd --no-headers 2>/dev/null | grep -q .; then
+    if kubectl get namespace kube-system >/dev/null 2>&1; then
+      if kubectl get pods -n kube-system -l component=etcd --no-headers 2>/dev/null | grep -q .; then
+        etcd_namespace="kube-system"
+        etcd_label="component=etcd"
+        echo "✅ Detected Kubernetes/k3s cluster - etcd in kube-system namespace"
+      fi
+    fi
+  fi
+
+  INITIAL_ETCD_RESTARTS=$(get_initial_pod_restart_counts "$etcd_namespace" "$etcd_label")
+  echo "ℹ️  Initial etcd restart counts: $INITIAL_ETCD_RESTARTS"
+
+  # Warn if no etcd pods found
+  if [[ "$INITIAL_ETCD_RESTARTS" == "{}" ]]; then
+    echo "⚠️  Warning: No etcd pods found in namespace $etcd_namespace with label $etcd_label"
+    echo "ℹ️  Etcd metrics may not be available for this cluster"
+  fi
+
+  # Get initial operator restart counts
+  INITIAL_OPERATOR_RESTARTS=$(get_initial_pod_restart_counts "$DWO_NAMESPACE" "app.kubernetes.io/name=devworkspace-controller")
+  echo "ℹ️  Initial operator restart counts: $INITIAL_OPERATOR_RESTARTS"
+
   if IN_CLUSTER='false' \
     KUBE_TOKEN="${KUBE_TOKEN}" \
     KUBE_API="${KUBE_API}" \
@@ -440,6 +487,8 @@ run_k6_binary_test() {
     DELETE_DEVWORKSPACE_AFTER_READY="${DELETE_DEVWORKSPACE_AFTER_READY}" \
     MAX_DEVWORKSPACES="${MAX_DEVWORKSPACES}" \
     SKIP_CLEANUP="${SKIP_CLEANUP}" \
+    INITIAL_ETCD_RESTARTS="${INITIAL_ETCD_RESTARTS}" \
+    INITIAL_OPERATOR_RESTARTS="${INITIAL_OPERATOR_RESTARTS}" \
     k6 run "${K6_SCRIPT}"; then
     echo "✅ k6 load test completed successfully"
   else
