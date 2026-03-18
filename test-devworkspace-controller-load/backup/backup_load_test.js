@@ -35,6 +35,8 @@ const operatorNamespace = __ENV.DWO_NAMESPACE || 'openshift-operators';
 const loadTestNamespace = __ENV.LOAD_TEST_NAMESPACE || "loadtest-devworkspaces";
 const backupMonitorDurationMinutes = Number(__ENV.BACKUP_MONITOR_DURATION_MINUTES || 30);
 const dwocConfigType = __ENV.DWOC_CONFIG_TYPE || 'correct';
+const verifyRestore = __ENV.VERIFY_RESTORE !== 'false'; // Default to true, can be disabled with VERIFY_RESTORE=false
+const maxRestoreSamples = Number(__ENV.MAX_RESTORE_SAMPLES || 10); // Maximum number of workspaces to restore for verification
 const backupJobLabel = "controller.devfile.io/backup-job=true";
 let ETCD_NAMESPACE = 'openshift-etcd';
 let ETCD_POD_NAME_PATTERN = 'etcd';
@@ -60,12 +62,17 @@ export const options = {
   },
   thresholds: {
     'backup_jobs_total': ['count>0'],
-    'backup_jobs_succeeded': ['count>0'],
-    'backup_jobs_failed': ['count==0'],
+    'backup_jobs_succeeded': dwocConfigType === 'incorrect' ? [] : ['count>0'],
+    'backup_jobs_failed': dwocConfigType === 'incorrect' ? ['count>0'] : ['count==0'],
     'backup_pods_total': ['count>0'],
     'workspaces_stopped': ['count>0'],
-    'workspaces_backed_up': ['count>0'],
-    'backup_success_rate': ['value>=0.95'],
+    'workspaces_backed_up': dwocConfigType === 'incorrect' ? [] : ['count>0'],
+    'backup_success_rate': dwocConfigType === 'incorrect' ? [] : ['value>=0.95'],
+    // Restore thresholds only apply for correct/openshift-internal modes
+    'restore_workspaces_total': dwocConfigType === 'incorrect' || !verifyRestore ? [] : ['count>0'],
+    'restore_workspaces_succeeded': dwocConfigType === 'incorrect' || !verifyRestore ? [] : ['count>0'],
+    'restore_workspaces_failed': dwocConfigType === 'incorrect' || !verifyRestore ? [] : ['count==0'],
+    'restore_success_rate': dwocConfigType === 'incorrect' || !verifyRestore ? [] : ['value>=0.95'],
     'operator_cpu_violations': ['count==0'],
     'operator_mem_violations': ['count==0'],
   },
@@ -93,6 +100,13 @@ const operatorMemViolations = new Counter('operator_mem_violations');
 const operatorPodRestarts = new Gauge('operator_pod_restarts_total');
 const etcdPodRestarts = new Gauge('etcd_pod_restarts_total');
 
+// Restore verification metrics
+const restoreWorkspacesTotal = new Counter('restore_workspaces_total');
+const restoreWorkspacesSucceeded = new Counter('restore_workspaces_succeeded');
+const restoreWorkspacesFailed = new Counter('restore_workspaces_failed');
+const restoreDuration = new Trend('restore_duration');
+const restoreSuccessRate = new Gauge('restore_success_rate');
+
 const maxCpuMillicores = 250;
 const maxMemoryBytes = 200 * 1024 * 1024;
 
@@ -112,7 +126,24 @@ export function runBackupLoadTest(data) {
   console.log("======================================\n");
 
   // Stop workspaces and monitor backups
-  stopWorkspacesAndMonitorBackups(data);
+  const backedUpWorkspaces = stopWorkspacesAndMonitorBackups(data);
+
+  // Restore verification (if enabled and workspaces were backed up)
+  if (verifyRestore) {
+    // Don't attempt restore in incorrect mode - backups intentionally failed
+    if (dwocConfigType === 'incorrect') {
+      console.log("\nℹ️  Restore verification skipped - DWOC config type is 'incorrect' (backups intentionally failed)");
+    } else if (backedUpWorkspaces.length > 0) {
+      console.log("\n======================================");
+      console.log("Restore Verification");
+      console.log("======================================\n");
+      verifyWorkspaceRestore(backedUpWorkspaces);
+    } else {
+      console.warn("\n⚠️  No workspaces were successfully backed up - skipping restore verification");
+    }
+  } else {
+    console.log("\nℹ️  Restore verification is disabled (VERIFY_RESTORE=false)");
+  }
 }
 
 function stopWorkspacesAndMonitorBackups(data) {
@@ -151,15 +182,18 @@ function stopWorkspacesAndMonitorBackups(data) {
 
   // Step 5: Verify all workspaces were backed up
   console.log("\nStep 5: Verifying backup coverage...");
-  verifyBackupCoverage(devWorkspaces);
+  const backedUpWorkspaces = verifyBackupCoverage(devWorkspaces);
 
   // Step 6: Final metrics collection
   console.log("\nStep 6: Collecting final metrics...");
   collectFinalMetrics();
 
   console.log("\n======================================");
-  console.log("Backup Load Test Completed");
+  console.log("Backup Monitoring Completed");
   console.log("======================================\n");
+
+  // Return list of backed up workspaces for restore verification
+  return backedUpWorkspaces;
 }
 
 function getAllDevWorkspaces() {
@@ -218,7 +252,6 @@ function waitForBackupJobsCreation(maxWaitMinutes, pollIntervalSeconds) {
       return true;
     }
 
-    console.log(`  No backup Jobs yet... waiting (attempt ${attempts + 1}/${maxAttempts})`);
     sleep(pollIntervalSeconds);
     attempts++;
   }
@@ -371,22 +404,27 @@ function verifyBackupCoverage(devWorkspaces) {
     }
   }
 
-  // Count how many workspaces were backed up
-  let backedUpCount = 0;
+  // Build list of successfully backed up workspaces
+  const backedUpWorkspaces = [];
   for (const dw of devWorkspaces) {
     // Use bracket notation for devworkspaceId
     const dwId = dw.status && dw.status['devworkspaceId'];
     if (dwId && backedUpWorkspaceIds.has(dwId)) {
-      backedUpCount++;
+      backedUpWorkspaces.push({
+        name: dw.metadata.name,
+        namespace: dw.metadata.namespace,
+        workspaceId: dwId,
+        originalSpec: dw.spec,
+      });
     }
   }
 
-  workspacesBackedUp.add(backedUpCount);
+  workspacesBackedUp.add(backedUpWorkspaces.length);
 
-  console.log(`Backup Coverage: ${backedUpCount}/${devWorkspaces.length} workspaces backed up`);
+  console.log(`Backup Coverage: ${backedUpWorkspaces.length}/${devWorkspaces.length} workspaces backed up`);
 
-  if (backedUpCount < devWorkspaces.length) {
-    console.warn(`Warning: ${devWorkspaces.length - backedUpCount} workspaces were not backed up`);
+  if (backedUpWorkspaces.length < devWorkspaces.length) {
+    console.warn(`Warning: ${devWorkspaces.length - backedUpWorkspaces.length} workspaces were not backed up`);
 
     // List workspaces that weren't backed up
     for (const dw of devWorkspaces) {
@@ -403,6 +441,8 @@ function verifyBackupCoverage(devWorkspaces) {
     console.log("\nVerifying ImageStream creation for OpenShift internal registry...");
     verifyImageStreams(devWorkspaces, backedUpWorkspaceIds);
   }
+
+  return backedUpWorkspaces;
 }
 
 function verifyImageStreams(devWorkspaces, backedUpWorkspaceIds) {
@@ -450,14 +490,8 @@ function verifyImageStreams(devWorkspaces, backedUpWorkspaceIds) {
 
     if (matchingIS) {
       imageStreamCount++;
-      console.log(`  ✅ ImageStream found for ${namespace}/${dwName}: ${matchingIS.metadata.name}`);
     } else {
       console.warn(`  ⚠️  No ImageStream found for ${namespace}/${dwName} (ID: ${dwId})`);
-      // List available ImageStreams in this namespace for debugging
-      if (imageStreams.length > 0) {
-        console.log(`     Available ImageStreams in ${namespace}:`);
-        imageStreams.forEach(is => console.log(`       - ${is.metadata.name}`));
-      }
     }
   }
 
@@ -545,6 +579,170 @@ function checkSystemEtcdMetrics() {
   checkEtcdMetrics(apiServer, headers, ETCD_NAMESPACE, ETCD_POD_NAME_PATTERN, metrics, etcdPodRestarts, ETCD_POD_SELECTOR, initialEtcdRestarts);
 }
 
+function ensureRegistrySecretInNamespace(namespace) {
+  const secretName = 'quay-push-secret';
+
+  // Delete existing secret if present (to ensure fresh credentials)
+  const deleteUrl = `${apiServer}/api/v1/namespaces/${namespace}/secrets/${secretName}`;
+  http.del(deleteUrl, null, {headers});
+
+  // Get secret from operator namespace
+  const secretUrl = `${apiServer}/api/v1/namespaces/${operatorNamespace}/secrets/${secretName}`;
+  const secretRes = http.get(secretUrl, {headers});
+
+  if (secretRes.status !== 200) {
+    console.warn(`  ⚠️  Registry secret not found in ${operatorNamespace}, restore may fail`);
+    return false;
+  }
+
+  // Copy secret to workspace namespace
+  const secret = JSON.parse(secretRes.body);
+  secret.metadata.namespace = namespace;
+  delete secret.metadata.resourceVersion;
+  delete secret.metadata.uid;
+  delete secret.metadata.creationTimestamp;
+
+  const createUrl = `${apiServer}/api/v1/namespaces/${namespace}/secrets`;
+  const createRes = http.post(createUrl, JSON.stringify(secret), {headers});
+
+  if (createRes.status !== 201) {
+    console.warn(`  ⚠️  Failed to create registry secret in ${namespace} (HTTP ${createRes.status})`);
+    return false;
+  }
+
+  return true;
+}
+
+function verifyWorkspaceRestore(backedUpWorkspaces) {
+  console.log(`Starting restore verification for ${backedUpWorkspaces.length} backed up workspaces`);
+
+  const maxRestoreCount = Math.min(maxRestoreSamples, backedUpWorkspaces.length);
+  const samplesToRestore = backedUpWorkspaces.slice(0, maxRestoreCount);
+
+  console.log(`Restoring ${samplesToRestore.length} workspaces IN PARALLEL...\n`);
+
+  // STEP 0: Ensure registry secrets (in parallel for unique namespaces)
+  const uniqueNamespaces = [...new Set(samplesToRestore.map(ws => ws.namespace))];
+  uniqueNamespaces.forEach(ns => ensureRegistrySecretInNamespace(ns));
+
+  // STEP 1: Delete all workspaces in parallel using http.batch()
+  console.log(`\nStep 1: Deleting ${samplesToRestore.length} workspaces in parallel...`);
+  const deleteRequests = samplesToRestore.map(ws => ({
+    method: 'DELETE',
+    url: `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${ws.namespace}/devworkspaces/${ws.name}`,
+    params: { headers }
+  }));
+
+  http.batch(deleteRequests);
+  sleep(5);
+
+  // STEP 2: Create all workspaces in parallel
+  console.log(`\nStep 2: Creating ${samplesToRestore.length} restored workspaces in parallel...`);
+  const createRequests = samplesToRestore.map(workspace => {
+    const restoreSpec = JSON.parse(JSON.stringify(workspace.originalSpec));
+    if (!restoreSpec.template) restoreSpec.template = {};
+    if (!restoreSpec.template.attributes) restoreSpec.template.attributes = {};
+    restoreSpec.template.attributes['controller.devfile.io/restore-workspace'] = 'true';
+
+    // Remove projects to avoid git clone overwriting restore
+    if (restoreSpec.template.projects) delete restoreSpec.template.projects;
+    restoreSpec.started = true;
+
+    return {
+      method: 'POST',
+      url: `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${workspace.namespace}/devworkspaces`,
+      body: JSON.stringify({
+        apiVersion: 'workspace.devfile.io/v1alpha2',
+        kind: 'DevWorkspace',
+        metadata: { name: workspace.name, namespace: workspace.namespace },
+        spec: restoreSpec
+      }),
+      params: { headers }
+    };
+  });
+
+  const createResponses = http.batch(createRequests);
+  samplesToRestore.forEach(() => restoreWorkspacesTotal.add(1));
+
+  // STEP 3: Poll all workspaces in parallel until Ready
+  console.log(`\nStep 3: Monitoring ${samplesToRestore.length} workspaces in parallel...`);
+  const startTime = Date.now();
+  const maxWaitTime = 600 * 1000;
+  const pollInterval = 5 * 1000;
+
+  const status = samplesToRestore.map(ws => ({
+    ...ws,
+    phase: 'Unknown',
+    done: false,
+    startTime: Date.now()
+  }));
+
+  let successCount = 0;
+  let failCount = 0;
+
+  while (Date.now() - startTime < maxWaitTime && status.some(s => !s.done)) {
+    const statusRequests = status
+      .filter(s => !s.done)
+      .map(ws => ({
+        method: 'GET',
+        url: `${apiServer}/apis/workspace.devfile.io/v1alpha2/namespaces/${ws.namespace}/devworkspaces/${ws.name}`,
+        params: { headers }
+      }));
+
+    if (statusRequests.length === 0) break;
+
+    const statusResponses = http.batch(statusRequests);
+
+    let activeIdx = 0;
+    status.forEach((ws, idx) => {
+      if (ws.done) return;
+
+      const res = statusResponses[activeIdx++];
+      if (res.status === 200) {
+        const dw = JSON.parse(res.body);
+        const phase = dw.status?.phase || 'Unknown';
+        status[idx].phase = phase;
+
+        if (phase === 'Running') {
+          status[idx].done = true;
+          const duration = Date.now() - ws.startTime;
+          restoreDuration.add(duration);
+          successCount++;
+          restoreWorkspacesSucceeded.add(1);
+        } else if (phase === 'Failed') {
+          status[idx].done = true;
+          failCount++;
+          restoreWorkspacesFailed.add(1);
+          console.error(`  ❌ ${ws.namespace}/${ws.name} failed`);
+        }
+      }
+    });
+
+    sleep(pollInterval / 1000);
+  }
+
+  // Handle timeouts
+  status.forEach(ws => {
+    if (!ws.done) {
+      failCount++;
+      restoreWorkspacesFailed.add(1);
+      console.error(`  ❌ ${ws.namespace}/${ws.name} timed out (${ws.phase})`);
+    }
+  });
+
+  const successRate = samplesToRestore.length > 0 ? (successCount / samplesToRestore.length) : 0;
+  restoreSuccessRate.add(successRate);
+
+  console.log("\n======================================");
+  console.log("Restore Verification Summary");
+  console.log("======================================");
+  console.log(`Total: ${samplesToRestore.length}`);
+  console.log(`Succeeded: ${successCount}`);
+  console.log(`Failed: ${failCount}`);
+  console.log(`Success Rate: ${(successRate * 100).toFixed(2)}%`);
+  console.log("======================================\n");
+}
+
 export function handleSummary(data) {
   const allowedMetrics = [
     'backup_jobs_total',
@@ -558,6 +756,11 @@ export function handleSummary(data) {
     'backup_job_duration',
     'imagestreams_created',
     'imagestreams_expected',
+    'restore_workspaces_total',
+    'restore_workspaces_succeeded',
+    'restore_workspaces_failed',
+    'restore_duration',
+    'restore_success_rate',
     'operator_cpu_violations',
     'operator_mem_violations',
     'average_operator_cpu',

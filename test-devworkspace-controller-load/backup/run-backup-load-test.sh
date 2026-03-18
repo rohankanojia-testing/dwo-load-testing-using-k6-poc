@@ -30,6 +30,8 @@ ROLEBINDING_NAME="k6-backup-binding"
 K6_SCRIPT="test-devworkspace-controller-load/backup/backup_load_test.js"
 SEPARATE_NAMESPACES="false"
 BACKUP_MONITOR_DURATION_MINUTES="30"
+VERIFY_RESTORE="true"  # Enable restore verification by default
+MAX_RESTORE_SAMPLES="10"  # Number of workspaces to restore for verification
 MIN_KUBECTL_VERSION="1.24.0"
 MIN_K6_VERSION="1.1.0"
 
@@ -69,6 +71,8 @@ Options:
   --dwoc-config-type <string>             DWOC config type: correct, incorrect, or openshift-internal (default: correct)
   --separate-namespaces <true|false>      DevWorkspaces in separate namespaces (default: false)
   --backup-monitor-duration <minutes>     How long to monitor backups (default: 30)
+  --verify-restore <true|false>           Enable restore verification (default: true)
+  --max-restore-samples <number>          Max workspaces to restore for verification (default: 10)
   -h, --help                              Show this help message
 
 Examples:
@@ -103,6 +107,10 @@ parse_arguments() {
         SEPARATE_NAMESPACES="$2"; shift 2;;
       --backup-monitor-duration)
         BACKUP_MONITOR_DURATION_MINUTES="$2"; shift 2;;
+      --verify-restore)
+        VERIFY_RESTORE="$2"; shift 2;;
+      --max-restore-samples)
+        MAX_RESTORE_SAMPLES="$2"; shift 2;;
       -h|--help)
         print_help; exit 0;;
       *)
@@ -179,6 +187,24 @@ version_gte() {
   [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]
 }
 
+copy_registry_secret_to_workspace_namespace() {
+  # Check if secret exists in DWO namespace
+  if ! kubectl get secret quay-push-secret -n "${DWO_NAMESPACE}" >/dev/null 2>&1; then
+    log_warning "Registry secret not found in ${DWO_NAMESPACE}, restore may fail"
+    return 0
+  fi
+
+  # Delete old secret if it exists (to ensure fresh credentials)
+  kubectl delete secret quay-push-secret -n "${LOAD_TEST_NAMESPACE}" --ignore-not-found >/dev/null 2>&1
+
+  # Copy secret to workspace namespace
+  kubectl get secret quay-push-secret -n "${DWO_NAMESPACE}" -o yaml | \
+    sed "s/namespace: ${DWO_NAMESPACE}/namespace: ${LOAD_TEST_NAMESPACE}/" | \
+    kubectl apply -f - >/dev/null 2>&1 || log_warning "Failed to copy registry secret"
+
+  log_success "Registry secret ready for restore"
+}
+
 create_rbac() {
   log_info "Creating ServiceAccount and RBAC..."
   kubectl apply -f - <<EOF
@@ -195,13 +221,16 @@ metadata:
 rules:
   - apiGroups: ["workspace.devfile.io"]
     resources: ["devworkspaces"]
-    verbs: ["get", "list", "watch", "patch"]
+    verbs: ["get", "list", "watch", "patch", "create", "delete"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods", "namespaces"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "delete"]
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods"]
     verbs: ["get", "list"]
@@ -226,9 +255,10 @@ EOF
 
 cleanup_rbac() {
   log_info "Cleaning up RBAC resources..."
-  kubectl delete clusterrolebinding "${ROLEBINDING_NAME}" --ignore-not-found
-  kubectl delete clusterrole "${CLUSTERROLE_NAME}" --ignore-not-found
-  kubectl delete serviceaccount "${SA_NAME}" -n "${LOAD_TEST_NAMESPACE}" --ignore-not-found
+  kubectl delete clusterrolebinding "${ROLEBINDING_NAME}" --ignore-not-found >/dev/null 2>&1
+  kubectl delete clusterrole "${CLUSTERROLE_NAME}" --ignore-not-found >/dev/null 2>&1
+  kubectl delete serviceaccount "${SA_NAME}" -n "${LOAD_TEST_NAMESPACE}" --ignore-not-found >/dev/null 2>&1
+  log_success "RBAC resources cleaned up"
 }
 
 cleanup_devworkspaces() {
@@ -241,7 +271,8 @@ cleanup_devworkspaces() {
 
     if [[ "$dw_count" -gt 0 ]]; then
       log_info "Deleting ${dw_count} DevWorkspaces across separate namespaces..."
-      kubectl delete dw --all-namespaces -l load-test=test-type --ignore-not-found --wait=false
+      kubectl delete dw --all-namespaces -l load-test=test-type --ignore-not-found --wait=false >/dev/null 2>&1
+      log_success "Deleted ${dw_count} DevWorkspaces"
     else
       log_info "No DevWorkspaces found to delete"
     fi
@@ -251,7 +282,8 @@ cleanup_devworkspaces() {
     dw_count=$(kubectl get dw -n "$LOAD_TEST_NAMESPACE" --no-headers 2>/dev/null | wc -l || echo "0")
 
     if [[ "$dw_count" -gt 0 ]]; then
-      kubectl delete dw --all -n "${LOAD_TEST_NAMESPACE}" --ignore-not-found --wait=false
+      kubectl delete dw --all -n "${LOAD_TEST_NAMESPACE}" --ignore-not-found --wait=false >/dev/null 2>&1
+      log_success "Deleted ${dw_count} DevWorkspaces"
     else
       log_info "No DevWorkspaces found to delete"
     fi
@@ -260,7 +292,8 @@ cleanup_devworkspaces() {
 
 delete_namespace() {
   log_info "Deleting namespace: ${LOAD_TEST_NAMESPACE}"
-  kubectl delete namespace "${LOAD_TEST_NAMESPACE}" --ignore-not-found --wait=false
+  kubectl delete namespace "${LOAD_TEST_NAMESPACE}" --ignore-not-found --wait=false >/dev/null 2>&1
+  log_success "Namespace deletion initiated"
 }
 
 generate_token_and_api_url() {
@@ -330,6 +363,8 @@ run_k6_binary_test() {
     SEPARATE_NAMESPACES="${SEPARATE_NAMESPACES}" \
     LOAD_TEST_NAMESPACE="${LOAD_TEST_NAMESPACE}" \
     BACKUP_MONITOR_DURATION_MINUTES="${BACKUP_MONITOR_DURATION_MINUTES}" \
+    VERIFY_RESTORE="${VERIFY_RESTORE}" \
+    MAX_RESTORE_SAMPLES="${MAX_RESTORE_SAMPLES}" \
     INITIAL_ETCD_RESTARTS="${INITIAL_ETCD_RESTARTS}" \
     INITIAL_OPERATOR_RESTARTS="${INITIAL_OPERATOR_RESTARTS}" \
     k6 run "${K6_SCRIPT}"; then
@@ -356,10 +391,13 @@ main() {
   log_info "DWOC Config Type: $DWOC_CONFIG_TYPE"
   log_info "Separate Namespaces: $SEPARATE_NAMESPACES"
   log_info "Monitor Duration: $BACKUP_MONITOR_DURATION_MINUTES minutes"
+  log_info "Verify Restore: $VERIFY_RESTORE"
+  log_info "Max Restore Samples: $MAX_RESTORE_SAMPLES"
   log_info "========================================"
   echo ""
 
   create_rbac
+  copy_registry_secret_to_workspace_namespace
   start_background_watchers
 
   local test_exit_code=0
